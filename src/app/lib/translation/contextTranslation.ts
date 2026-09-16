@@ -129,14 +129,22 @@ export const extractTranslatedLinesWithNumbers = (response: string, expectedCoun
   NUMBERED_TRANSLATE_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
   let sawOneBasedOverflow = false;
+  const seen = new Set<number>();
+  const ambiguous = new Set<number>();
   while ((match = NUMBERED_TRANSLATE_RE.exec(response)) !== null) {
     const idx = Number(match[1]);
-    if (idx >= 0 && idx < expectedCount && !results[idx]) {
-      results[idx] = cleanTranslatedContent(match[2].trim());
+    if (idx >= 0 && idx < expectedCount) {
+      const content = cleanTranslatedContent(match[2].trim());
+      if (/\[\/?(?:TRANSLATE|TRANSLTranslate)_\d+\]/i.test(match[2]) || (seen.has(idx) && results[idx] !== content)) {
+        ambiguous.add(idx);
+      }
+      if (!seen.has(idx)) results[idx] = content;
+      seen.add(idx);
     } else if (idx === expectedCount) {
       sawOneBasedOverflow = true;
     }
   }
+  for (const idx of ambiguous) results[idx] = "";
 
   // 1-based renumbering fail-safe: a tag numbered exactly expectedCount (one
   // past the last valid index) TOGETHER WITH an empty slot 0 is the signature
