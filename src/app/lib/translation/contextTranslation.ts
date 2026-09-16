@@ -45,7 +45,7 @@ export const isBlankLine = (line: string | undefined): boolean => !(line ?? "").
 export const prefillFromLineCache = async (
   contentLines: string[],
   translatedLines: (string | undefined)[],
-  cacheGetMany: (texts: string[]) => Promise<(string | null)[]>,
+  cacheGetMany: (texts: string[], indices: number[]) => Promise<(string | null)[]>,
   /**
    * 命中项落盘【前】的加工。必须传术语表 enforcement:同一批缓存键里混着两种
    * 内容 —— 上下文路径存的是已 enforce 的成品,而 translateCore(逐行/chunk
@@ -74,7 +74,7 @@ export const prefillFromLineCache = async (
 
   let hits: (string | null)[];
   try {
-    hits = await cacheGetMany(pending.map((i) => contentLines[i]));
+    hits = await cacheGetMany(pending.map((i) => contentLines[i]), pending);
   } catch {
     return; // treat a failed batch lookup as all-miss — the lines translate normally
   }
@@ -128,7 +128,7 @@ const NUMBERED_TRANSLATE_RE = /\[TRANSLATE_(\d+)\]([\s\S]*?)\[\/(?:TRANSLATE|TRA
  * merge. Omitting `adjacent` assumes all slots are adjacent (legacy behavior,
  * correct for dense callers whose arrays are contiguous by construction).
  */
-export const extractTranslatedLinesWithNumbers = (response: string, expectedCount: number, sourceLines?: string[], contextLines?: string[], adjacent?: readonly boolean[]): string[] => {
+export const extractTranslatedLinesWithNumbers = (response: string, expectedCount: number, sourceLines?: string[], contextLines?: string[], adjacent?: readonly boolean[], echoSlots?: Set<number>): string[] => {
   // Initialize with empty strings to ensure consistent return type
   const results = new Array<string>(expectedCount).fill("");
 
@@ -138,19 +138,35 @@ export const extractTranslatedLinesWithNumbers = (response: string, expectedCoun
   NUMBERED_TRANSLATE_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
   let sawOneBasedOverflow = false;
+  let oneBasedContent: string | undefined;
+  const seen = new Set<number>();
+  const ambiguous = new Set<number>();
   while ((match = NUMBERED_TRANSLATE_RE.exec(response)) !== null) {
     const idx = Number(match[1]);
-    if (idx >= 0 && idx < expectedCount && !results[idx]) {
-      results[idx] = cleanTranslatedContent(match[2].trim());
+    if (idx >= 0 && idx < expectedCount) {
+      const content = cleanTranslatedContent(match[2].trim());
+      if (/\[\/?(?:TRANSLATE|TRANSLTranslate)_\d+\]/i.test(match[2]) || (seen.has(idx) && results[idx] !== content)) {
+        ambiguous.add(idx);
+      }
+      if (!seen.has(idx)) results[idx] = content;
+      seen.add(idx);
     } else if (idx === expectedCount) {
       sawOneBasedOverflow = true;
       // Single-target batch: a lone [TRANSLATE_1] can only mean the one line
       // (there is no index 0 marker and no other line to refer to), so recover
       // it instead of rejecting/soft-filling. The wholesale-reject guard below
       // still applies to multi-target 1..N responses.
-      if (expectedCount === 1 && !results[0]) results[0] = cleanTranslatedContent(match[2].trim());
+      if (expectedCount === 1) {
+        const content = cleanTranslatedContent(match[2].trim());
+        if (/\[\/?(?:TRANSLATE|TRANSLTranslate)_\d+\]/i.test(match[2]) || (oneBasedContent !== undefined && oneBasedContent !== content)) {
+          ambiguous.add(idx);
+        }
+        oneBasedContent ??= content;
+      }
     }
   }
+  for (const idx of ambiguous) if (idx < expectedCount) results[idx] = "";
+  if (expectedCount === 1 && !seen.has(0) && !ambiguous.has(1)) results[0] = oneBasedContent ?? "";
 
   // 1-based renumbering fail-safe: a tag numbered exactly expectedCount (one
   // past the last valid index) TOGETHER WITH an empty slot 0 is the signature
@@ -235,6 +251,7 @@ export const extractTranslatedLinesWithNumbers = (response: string, expectedCoun
   // spuriously "match" them.
   const echoWindow = contextLines ?? sourceLines;
   if (echoWindow !== undefined) {
+    echoSlots?.clear();
     const echoSet = new Set(echoWindow.map((l) => (l ?? "").trim()).filter((l) => l !== ""));
     const selfTranslated = new Set<string>();
     for (let i = 0; i < expectedCount; i++) {
@@ -244,7 +261,10 @@ export const extractTranslatedLinesWithNumbers = (response: string, expectedCoun
     for (let i = 0; i < expectedCount; i++) {
       const content = results[i].trim();
       if (content === "" || content === (sourceLines?.[i] ?? "").trim()) continue;
-      if (echoSet.has(content) && !selfTranslated.has(content)) results[i] = "";
+      if (echoSet.has(content) && !selfTranslated.has(content)) {
+        echoSlots?.add(i);
+        results[i] = "";
+      }
     }
   }
 
