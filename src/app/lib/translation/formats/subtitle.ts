@@ -394,6 +394,7 @@ export const filterSubLines = (lines: string[], fileType: string) => {
         extractedContent = line;
       }
     } else if (fileType === "lrc") {
+      if (LRC_METADATA_REGEX.test(trimmedLine)) return;
       if (!startExtracting && LRC_TIME_REGEX.test(trimmedLine)) {
         startExtracting = true;
       }
