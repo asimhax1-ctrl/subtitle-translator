@@ -30,6 +30,14 @@ export type CacheSuffixInput = {
    * don't enter the hash; absent/empty hashes identical to pre-glossary keys.
    */
   glossaryTerms?: GlossaryTerm[];
+  /**
+   * Whole document passed to a prompt that uses ${fullText}. Must enter the
+   * hash: the output then depends on the document, not just the line, so two
+   * documents sharing a line must not share a per-line cache entry (silent
+   * cross-document contamination with zero wire traffic). Only present when
+   * the prompt actually opts in — other runs hash identically to before.
+   */
+  fullText?: string;
 };
 
 // Stable, trimmed wire-relevant projection of the term list for hashing.
@@ -43,16 +51,17 @@ const hashableTerms = (terms?: GlossaryTerm[]): string[][] | undefined => {
  * config affects output (LLM-style and Qwen-MT), hashes the relevant fields
  * into the suffix so config changes invalidate stale entries automatically.
  */
-export const generateCacheSuffix = ({ sourceLanguage, targetLanguage, translationMethod, config, systemPrompt, userPrompt, glossaryTerms }: CacheSuffixInput): string => {
+export const generateCacheSuffix = ({ sourceLanguage, targetLanguage, translationMethod, config, systemPrompt, userPrompt, glossaryTerms, fullText }: CacheSuffixInput): string => {
   const base = `${targetLanguage}_${sourceLanguage}_${translationMethod}`;
   const terms = hashableTerms(glossaryTerms);
 
   if (LLM_MODELS.includes(translationMethod)) {
+    const effectiveUserPrompt = normalizePrompt(userPrompt, DEFAULT_USER_PROMPT);
     const payload = {
       model: config?.model || "",
       temperature: config?.temperature ?? 1.0,
       systemPrompt: normalizePrompt(systemPrompt, DEFAULT_SYSTEM_PROMPT),
-      userPrompt: normalizePrompt(userPrompt, DEFAULT_USER_PROMPT),
+      userPrompt: effectiveUserPrompt,
       // Effort goes into the hash only when deriveThinkingParams says it'll
       // actually be sent (tagged model + user picked an effort). Stale entries
       // for untagged SKUs don't bloat the cache key. JSON.stringify drops the
@@ -79,6 +88,10 @@ export const generateCacheSuffix = ({ sourceLanguage, targetLanguage, translatio
       // Glossary terms steer the per-request prompt block. Key absent when no
       // complete terms — pre-glossary cache entries stay valid.
       ...(terms && { glossaryTerms: terms }),
+      // Document-dependent output: only hashed when the template actually uses
+      // ${fullText}. Absent for every other prompt → keys unchanged even if a
+      // caller hands us a fullText it won't send.
+      ...(fullText && userPrompt?.includes("${fullText}") && { fullText }),
     };
     return `${base}_${SparkMD5.hash(JSON.stringify(payload))}`;
   }

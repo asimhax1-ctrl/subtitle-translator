@@ -1208,6 +1208,10 @@ const runTranslateLines = async (
       // block is a pure function of {text, this set}, so hashing the set
       // keeps the key deterministic while the wire prompt varies per line.
       glossaryTerms: ctx.getGlossaryTerms(config.targetLanguage),
+      // ${fullText} makes every line's output depend on the whole document;
+      // hashing it keeps two documents from sharing a per-line cache entry.
+      // undefined when the prompt doesn't opt in, so keys stay unchanged.
+      fullText,
     });
 
     // Context-aware translation with LLM. Glossary is applied per-line inside
