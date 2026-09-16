@@ -317,7 +317,7 @@ export const filterSubLines = (lines: string[], fileType: string) => {
       const dialogueLines = lines.filter((line) => /^dialogue:/i.test(line)).slice(0, 100);
       if (dialogueLines.length > 0) {
         const commaCounts = dialogueLines.map((line) => line.split(",").length - 1);
-        assContentStartIndex = Math.min(...commaCounts);
+        assContentStartIndex = Math.min(assContentStartIndex, ...commaCounts);
       }
     }
   }
