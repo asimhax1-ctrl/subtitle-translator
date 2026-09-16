@@ -144,6 +144,11 @@ export const extractTranslatedLinesWithNumbers = (response: string, expectedCoun
       results[idx] = cleanTranslatedContent(match[2].trim());
     } else if (idx === expectedCount) {
       sawOneBasedOverflow = true;
+      // Single-target batch: a lone [TRANSLATE_1] can only mean the one line
+      // (there is no index 0 marker and no other line to refer to), so recover
+      // it instead of rejecting/soft-filling. The wholesale-reject guard below
+      // still applies to multi-target 1..N responses.
+      if (expectedCount === 1 && !results[0]) results[0] = cleanTranslatedContent(match[2].trim());
     }
   }
 

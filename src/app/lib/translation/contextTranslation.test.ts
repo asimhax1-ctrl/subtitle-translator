@@ -33,6 +33,24 @@ describe("extractTranslatedLinesWithNumbers adjacency-aware merge guard", () => 
   });
 });
 
+describe("single-target 1-based marker recovery", () => {
+  it("maps a lone [TRANSLATE_1] onto the only target", () => {
+    // A lone target, yet the model numbered it 1 instead of 0. There is no
+    // other line the tag could mean, so recover it instead of soft-filling the
+    // line untranslated (the retry re-sends the same prompt and typically
+    // reproduces the same 1-based answer).
+    expect(extractTranslatedLinesWithNumbers("[TRANSLATE_1]transA[/TRANSLATE_1]", 1, ["srcA"])).toEqual(["transA"]);
+  });
+
+  it("prefers the requested 0-based tag when both are present", () => {
+    expect(extractTranslatedLinesWithNumbers("[TRANSLATE_0]good[/TRANSLATE_0][TRANSLATE_1]bad[/TRANSLATE_1]", 1, ["srcA"])).toEqual(["good"]);
+  });
+
+  it("still rejects the multi-target 1..N signature", () => {
+    expect(extractTranslatedLinesWithNumbers("[TRANSLATE_1]a[/TRANSLATE_1][TRANSLATE_2]b[/TRANSLATE_2]", 2, ["s1", "s2"])).toEqual(["", ""]);
+  });
+});
+
 describe("findAdjacentDuplicateSlots adjacency", () => {
   it("flags an equal pair whose sources differ (default)", () => {
     expect(findAdjacentDuplicateSlots(["same", "same"], ["a", "b"])).toEqual([0, 1]);
@@ -46,4 +64,3 @@ describe("findAdjacentDuplicateSlots adjacency", () => {
     expect(findAdjacentDuplicateSlots(["same", "same"], ["a", "b"], [false, true])).toEqual([0, 1]);
   });
 });
-
