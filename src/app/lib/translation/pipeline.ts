@@ -770,7 +770,32 @@ const translateWithContext = async (
       // Pass the full context window (target slice + ±padding) so the echo guard
       // can catch a TRANSLATE slot that copied a forward-[CONTEXT] source line
       // verbatim (the NHK 红白 ≈+9 misalignment), not just within-batch echoes.
-      const translatedBatch = extractTranslatedLinesWithNumbers(result || "", pendingLocal.length, pendingSources, contextLines);
+      const echoSlots = new Set<number>();
+      const translatedBatch = extractTranslatedLinesWithNumbers(result || "", pendingLocal.length, pendingSources, contextLines, echoSlots);
+
+      // Echo-guard 记录的槽位(contextTranslation.ts):译文与窗口内【别的行】
+      // 的源文逐字节相同。多数是模型抄了邻居源文(NHK 红白),但混语种文件里
+      // 也可能是【合法跨语同译】(ja "はい" → en "Yes",恰与上文英文行同文)。
+      // 与 dupSlots 同一条纪律:启发式只当触发器,裁决交给独立单行复译 ——
+      // 单行请求没有上下文窗口,抄邻居在物理上不可能;复译结果不同说明真是
+      // 抄袭,不同也不回滚(单行请求的译文即最终裁决)。复译失败/为空 → 置 ""
+      // 落进下方既有缺口机制(软填/降窗重试),与 dupSlots 同语义。
+      if (echoSlots.size > 0) {
+        ctx.noteError(new Error(`cross-line echo suspicion at lines ${[...echoSlots].map((j) => pendingLocal[j] + 1).join(", ")} — confirming each with an independent single-line translation.`));
+        for (const j of [...echoSlots].sort((x, y) => x - y)) {
+          if (run?.signal.aborted) throw new Error("Translation aborted");
+          try {
+            const one = await translateSingle(pendingSources[j], cacheSuffix, runtimeConfig, ctx, fullText);
+            // 换行拍平成空格,同 dupSlots 营救:单行译文里混进换行会破坏逐行装配。
+            translatedBatch[j] = one && one.trim() ? one.replace(/\r?\n/g, " ") : "";
+          } catch (err) {
+            if (isDefiniteAuthFailure(err)) throw err;
+            ctx.noteError(err);
+            translatedBatch[j] = "";
+          }
+          await abortableSleep(runtimeConfig.delayTime || 200, run?.signal);
+        }
+      }
 
       // 「相邻同译」修复(subtitle-translator#44 的残余形态:合并且补齐下一槽,
       // 块数正确、无缺口,提取层守卫全部放行)。检测只当【触发器】,裁决交给

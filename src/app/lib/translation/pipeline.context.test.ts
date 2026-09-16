@@ -127,6 +127,31 @@ describe("context resume isolation", () => {
   });
 });
 
+describe("context echo confirmation", () => {
+  it("confirms valid translations matching context without repeatedly retrying the same window", async () => {
+    const requests: string[] = [];
+    const translate = async ({ text }: TranslateTextParams) => {
+      requests.push(text);
+      return text.includes("[TRANSLATE_0]") ? "[TRANSLATE_0]Yes[/TRANSLATE_0]" : "Yes";
+    };
+    const outcome = await translateLines(["Yes", "はい"], { ...makeConfig(1), targetLanguage: "en", useCache: false, delayTime: 1 }, { translate }, "subtitle");
+    expect(outcome.lines).toEqual(["Yes", "Yes"]);
+    expect(outcome.failures).toEqual([]);
+    expect(requests).toHaveLength(3);
+    expect(requests[2]).toBe("はい");
+  });
+
+  it("replaces actual context echoes with an independent translation", async () => {
+    const translate = async ({ text }: TranslateTextParams) => {
+      if (text === "こんにちは") return "Hello";
+      return "[TRANSLATE_0]Goodbye[/TRANSLATE_0]";
+    };
+    const outcome = await translateLines(["Goodbye", "こんにちは"], { ...makeConfig(1), targetLanguage: "en", useCache: false, delayTime: 1 }, { translate }, "subtitle");
+    expect(outcome.lines).toEqual(["Goodbye", "Hello"]);
+    expect(outcome.failures).toEqual([]);
+  });
+});
+
 describe("context batch marker targeting", () => {
   it("targets only untranslated slots in a partially cached batch", async () => {
     const lines = ["A", "B", "C", "D"];

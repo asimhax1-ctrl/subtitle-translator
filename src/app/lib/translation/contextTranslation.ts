@@ -119,7 +119,7 @@ const NUMBERED_TRANSLATE_RE = /\[TRANSLATE_(\d+)\]([\s\S]*?)\[\/(?:TRANSLATE|TRA
  * was never a translation target". Omitting it assumes every slot is a real
  * target (legacy behavior — fine for callers that pre-filter blank lines).
  */
-export const extractTranslatedLinesWithNumbers = (response: string, expectedCount: number, sourceLines?: string[], contextLines?: string[]): string[] => {
+export const extractTranslatedLinesWithNumbers = (response: string, expectedCount: number, sourceLines?: string[], contextLines?: string[], echoSlots?: Set<number>): string[] => {
   // Initialize with empty strings to ensure consistent return type
   const results = new Array<string>(expectedCount).fill("");
 
@@ -225,6 +225,7 @@ export const extractTranslatedLinesWithNumbers = (response: string, expectedCoun
   // spuriously "match" them.
   const echoWindow = contextLines ?? sourceLines;
   if (echoWindow !== undefined) {
+    echoSlots?.clear();
     const echoSet = new Set(echoWindow.map((l) => (l ?? "").trim()).filter((l) => l !== ""));
     const selfTranslated = new Set<string>();
     for (let i = 0; i < expectedCount; i++) {
@@ -234,7 +235,10 @@ export const extractTranslatedLinesWithNumbers = (response: string, expectedCoun
     for (let i = 0; i < expectedCount; i++) {
       const content = results[i].trim();
       if (content === "" || content === (sourceLines?.[i] ?? "").trim()) continue;
-      if (echoSet.has(content) && !selfTranslated.has(content)) results[i] = "";
+      if (echoSet.has(content) && !selfTranslated.has(content)) {
+        echoSlots?.add(i);
+        results[i] = "";
+      }
     }
   }
 
