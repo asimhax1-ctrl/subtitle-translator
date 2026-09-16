@@ -27,7 +27,7 @@ import { generateCacheKey, generateCacheSuffix } from "./cache";
 import { cleanTranslatedText, splitTextIntoChunks } from "./utils";
 import { DEFAULT_SYSTEM_PROMPT, DEFAULT_USER_PROMPT } from "./config";
 import { applyGlossaryToText, buildGlossaryPromptBlock, buildStrictGlossaryPromptBlock, filterTermsMatchingText, findGlossaryViolations, type GlossaryTerm } from "./glossary";
-import { getRetryConfig, rateLimitGate, abortableSleep, isAuthError, isRetryableError, DEFAULT_BATCH_SIZE, DEFAULT_RETRY_COUNT, DEFAULT_RETRY_TIMEOUT } from "./retry";
+import { getRetryConfig, rateLimitGate, abortableSleep, isDefiniteAuthFailure, isRetryableError, DEFAULT_BATCH_SIZE, DEFAULT_RETRY_COUNT, DEFAULT_RETRY_TIMEOUT } from "./retry";
 // 自托管的那几家（llm / translategemma / milmmt）跑在本地运行时上，超时的主导
 // 原因不是网络/云服务，而是请求在单槽服务器上排队、或模型卡在复读循环，
 // 所以给专门的提示而不是通用的“服务慢，换一个”。
@@ -522,7 +522,7 @@ const translateSingle = async (text: string, cacheSuffix: string, config: Pipeli
           // Auth error → abort all concurrent requests OF THIS RUN. Aborting
           // a live ref instead would let a ghost task from a dead run kill
           // a healthy successor run.
-          if (isAuthError(error)) run?.abort();
+          if (isDefiniteAuthFailure(error)) run?.abort();
           // 429 → 触发该服务的全局冷却(尊重服务器 Retry-After,否则
           // 1s→2s→…→60s 升级)。trip 仅在【开启】一轮冷却时返回 true
           // (同一波并发 429 只第一个生效),据此通知一次降速(onRateLimit)——
@@ -564,7 +564,7 @@ const translateSingle = async (text: string, cacheSuffix: string, config: Pipeli
     // ⚠ auth 错误例外:第一个触发 abort 的正是它自己,得原样放行让 UI 说清原因
     // (pRetry 的 shouldRetry(auth)=false 会在任何 signal 检查之前 throw 原错误,
     // 所以它一定以原始形态到达这里)。
-    if (run?.signal.aborted && !isAuthError(error)) throw new Error("Translation aborted");
+    if (run?.signal.aborted && !isDefiniteAuthFailure(error)) throw new Error("Translation aborted");
     const textPreview = text.length > 30 ? `${text.substring(0, 30)}...` : text;
     // 文本带 cause 链(Node/CLI 需要它:console 打 Error 只给 [Error: x]),
     // 同时把【活的 Error 对象】一并传出去 —— 浏览器 devtools 靠它才有可展开的
@@ -601,13 +601,13 @@ const enforceGlossaryOnLine = async (sourceLine: string, rawTranslated: string, 
     if (findGlossaryViolations(sourceLine, second, terms).length < violations.length) return second;
     return first;
   } catch (error) {
-    // auth 【必须向上抛】,这是本文件的既定约定(grep `isAuthError(` 可见其余抛出点)。
+    // auth 【必须向上抛】,这是本文件的既定约定(grep `isDefiniteAuthFailure(` 可见其余抛出点)。
     // 曾经这里一律吞掉,理由写的是「auth 中止已由 translateSingle 传给本 run 的
     // controller」—— controller 确实被 abort 了,但错误的【身份】丢了:后续批次
     // 全部短路成 `Translation aborted`,而工具层对它是 `if (isCascadedAbort) continue`
     // ——静默。结果是过期的 key 配上开着的术语表,用户点翻译得到零输出、零 toast、
     // 零失败面板,完全不知道 key 已经失效(WAF/CDN 返回 403 也同形)。
-    if (isAuthError(error)) throw error;
+    if (isDefiniteAuthFailure(error)) throw error;
     // 其余(网络抖动 / 级联中止)不拖垮已成功的首译。
     return first;
   }
@@ -796,7 +796,7 @@ const translateWithContext = async (
             // 换行拍平成空格,同 chunk 营救:单行译文里混进换行会破坏逐行装配。
             translatedBatch[j] = one && one.trim() ? one.replace(/\r?\n/g, " ") : "";
           } catch (err) {
-            if (isAuthError(err)) throw err;
+            if (isDefiniteAuthFailure(err)) throw err;
             ctx.noteError(err);
             translatedBatch[j] = "";
           }
@@ -846,7 +846,7 @@ const translateWithContext = async (
 
       return !translatedLines.slice(batchStart, batchEnd).includes(undefined);
     } catch (error) {
-      if (isAuthError(error)) throw error;
+      if (isDefiniteAuthFailure(error)) throw error;
       // Real soft-failure (non-auth) — keep the raw reason so the failure
       // panel can show WHY (caller formats via describeError).
       ctx.noteError(error);
@@ -964,7 +964,7 @@ const translateWithContext = async (
       try {
         await translateSingleBatch(cStart, cEnd, RETRY_CONTEXT_WINDOW);
       } catch (err) {
-        if (isAuthError(err)) throw err;
+        if (isDefiniteAuthFailure(err)) throw err;
         // non-auth failures leave slots empty; final soft-fill handles them
       }
       const undefinedAfter = countUndefined(cStart, cEnd);
@@ -1025,7 +1025,7 @@ const translateWithContext = async (
         // breather — the only layer that actually gives rate-limited
         // providers time to reset. translateSingleBatch catches all
         // non-auth errors and returns false, so the only exception that
-        // escapes here is isAuthError, which we rethrow so Promise.all
+        // escapes here is isDefiniteAuthFailure, which we rethrow so Promise.all
         // rejects and peer tasks abort via the shared signal.
         await translateBatchWindow(batchStart, batchEnd, initialContextWindow);
         // Small gap AFTER each batch — helps severely rate-limited providers.
@@ -1064,7 +1064,7 @@ const translateWithContext = async (
     try {
       await clusterRetryFailures(0, contentLines.length);
     } catch (err) {
-      if (isAuthError(err)) throw err;
+      if (isDefiniteAuthFailure(err)) throw err;
       // Non-auth: leave remaining failures for the final soft-fill.
     }
   }
@@ -1260,7 +1260,7 @@ const runTranslateLines = async (
             // Auth error already tripped THIS run's controller inside translateSingle.
             // It must propagate raw so Promise.all kills the batch and the caller's
             // catch surfaces the real reason.
-            if (isAuthError(error)) throw error;
+            if (isDefiniteAuthFailure(error)) throw error;
             // run 已中止(auth 级联 / unmount abort):在飞请求死于裸
             // AbortError —— 原样上抛会被工具层按 isAbortError 当"超时"
             // 弹红 toast(卸载场景还弹在用户切去的页面上)。统一改抛级联标记,
@@ -1353,7 +1353,7 @@ const runTranslateLines = async (
         const translatedContent = await translateSingle(chunks[i], cacheSuffix, runtimeConfig, ctx, fullText);
         processed = config.translationMethod === "deeplx" ? (translatedContent || "").replace(/<>/g, "\n") : translatedContent || "";
       } catch (error) {
-        if (isAuthError(error)) throw error;
+        if (isDefiniteAuthFailure(error)) throw error;
         // 同 line 路径:run 已中止时把裸 AbortError 规范成级联标记,
         // 工具层静默而不是误报"超时"。
         if (runController.signal.aborted) throw new Error("Translation aborted");
@@ -1410,7 +1410,7 @@ const runTranslateLines = async (
               failedK.add(chunkStartK + j);
             }
           } catch (err) {
-            if (isAuthError(err)) throw err;
+            if (isDefiniteAuthFailure(err)) throw err;
             if (runController.signal.aborted) throw new Error("Translation aborted");
             ctx.noteError(err);
             rescued[j] = srcLine;
