@@ -736,6 +736,12 @@ const translateWithContext = async (
     const targetOrdinal = new Map<number, number>();
     pendingLocal.forEach((k, ordinal) => targetOrdinal.set(k - batchStart, ordinal));
 
+    // 相邻性(源文件坐标)平行于 pendingLocal。pendingLocal 升序但可能跳过已定稿
+    // 的行,于是它在列表里相邻的两个槽,源文件里可能隔着一整段缓存行。提取层的
+    // 合并守卫与「相邻同译」检测只该惩罚【物理相邻】的一对:把隔行缺口当合并,
+    // 会白白作废一条已经译对的前驱行(缓存重跑时尤其常见),极端下反复软填回原文。
+    const pendingAdjacent = pendingLocal.map((k, idx) => idx > 0 && k === pendingLocal[idx - 1] + 1);
+
     const contextWithMarkers = contextLines
       .map((line, index) => {
         if (index >= targetStartIndex && index < targetEndIndex) {
@@ -769,7 +775,7 @@ const translateWithContext = async (
       // Pass the full context window (target slice + ±padding) so the echo guard
       // can catch a TRANSLATE slot that copied a forward-[CONTEXT] source line
       // verbatim (the NHK 红白 ≈+9 misalignment), not just within-batch echoes.
-      const translatedBatch = extractTranslatedLinesWithNumbers(result || "", pendingLocal.length, pendingSources, contextLines);
+      const translatedBatch = extractTranslatedLinesWithNumbers(result || "", pendingLocal.length, pendingSources, contextLines, pendingAdjacent);
 
       // 「相邻同译」修复(subtitle-translator#44 的残余形态:合并且补齐下一槽,
       // 块数正确、无缺口,提取层守卫全部放行)。检测只当【触发器】,裁决交给
@@ -780,7 +786,7 @@ const translateWithContext = async (
       // 出了怪,满并发轰回去是错误的反射。复译为空/失败 → 置 "" 落进下方既有的
       // 缺口机制(软填/降窗重试);批级缓存先清,否则重试从缓存重放同一个坏响应。
       // 只修【未定稿】的槽(write-once):已预填的槽提交时本来就会被丢弃。
-      const dupSlots = findAdjacentDuplicateSlots(translatedBatch, pendingSources).filter((j) => translatedLines[pendingLocal[j]] === undefined);
+      const dupSlots = findAdjacentDuplicateSlots(translatedBatch, pendingSources, pendingAdjacent).filter((j) => translatedLines[pendingLocal[j]] === undefined);
       if (dupSlots.length > 0) {
         ctx.noteError(
           new Error(

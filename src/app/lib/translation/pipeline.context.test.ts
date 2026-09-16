@@ -126,6 +126,32 @@ describe("context batch marker targeting", () => {
     expect(outcome.lines.every((line) => line.length > 0)).toBe(true);
   });
 
+  it("keeps a correct translation when a NON-adjacent pending line's tag is omitted", async () => {
+    // A and C are pending with B cached between them. The model answers A but
+    // omits C's tag. Because A and C are not physically adjacent, the omission
+    // must not discard A's (correct) translation — the merge guard only applies
+    // to adjacent source lines.
+    const lines = ["A", "B", "C"];
+    const config = makeConfig(lines.length);
+    const cache = makeCache();
+    cache.store.set(generateCacheKey("B", suffixFor(config)), "缓存B");
+
+    const requests: string[] = [];
+    let call = 0;
+    const translate = async (params: TranslateTextParams): Promise<string> => {
+      requests.push(params.text);
+      if (call++ === 0) return "[TRANSLATE_0]firstA[/TRANSLATE_0]"; // omits ordinal 1
+      const ordinals = [...params.text.matchAll(TRANSLATE_MARKER_RE)].map((m) => Number(m[1]));
+      return ordinals.map((n) => `[TRANSLATE_${n}]later${n}[/TRANSLATE_${n}]`).join("\n");
+    };
+
+    const outcome = await translateLines(lines, config, { cache, translate }, "subtitle", {});
+
+    expect(outcome.failures).toEqual([]);
+    // firstA survived the gap; only C had to be re-translated.
+    expect(outcome.lines).toEqual(["firstA", "缓存B", "later0"]);
+  });
+
   it("still sends every line as a target when nothing is cached (unchanged happy path)", async () => {
     const lines = ["A", "B", "C", "D"];
     const config = makeConfig(lines.length);
@@ -141,5 +167,51 @@ describe("context batch marker targeting", () => {
     expect(text).toContain("[TRANSLATE_3]D[/TRANSLATE_3]");
     expect(outcome.failures).toEqual([]);
     expect(outcome.lines).toEqual(["译文0", "译文1", "译文2", "译文3"]);
+  });
+
+  it("keeps a correct translation when a later, non-adjacent target is omitted", async () => {
+    // A and C are pending with cached B between them. The model omits C's tag.
+    // Because A and C are not physically adjacent, the missing tag is an
+    // omission, not a merge — A's correct translation must survive (and only
+    // C should be retried).
+    const lines = ["A", "B", "C"];
+    const config = makeConfig(lines.length);
+    const cache = makeCache();
+    const suffix = suffixFor(config);
+    cache.store.set(generateCacheKey("B", suffix), "缓存B");
+
+    const requests: string[] = [];
+    const translate = async (params: TranslateTextParams): Promise<string> => {
+      requests.push(params.text);
+      if (params.text.includes("[TRANSLATE_0]A[/TRANSLATE_0]") && params.text.includes("[TRANSLATE_1]C[/TRANSLATE_1]")) {
+        return "[TRANSLATE_0]译文A[/TRANSLATE_0]";
+      }
+      return "[TRANSLATE_0]译文C[/TRANSLATE_0]";
+    };
+
+    const outcome = await translateLines(lines, config, { cache, translate }, "subtitle", {});
+
+    expect(outcome.lines).toEqual(["译文A", "缓存B", "译文C"]);
+    expect(outcome.failures).toEqual([]);
+    expect(requests).toHaveLength(2);
+  });
+
+  it("does not re-translate two equal non-adjacent pending lines as a merge", async () => {
+    const lines = ["A", "B", "C"];
+    const config = makeConfig(lines.length);
+    const cache = makeCache();
+    const suffix = suffixFor(config);
+    cache.store.set(generateCacheKey("B", suffix), "缓存B");
+
+    const requests: string[] = [];
+    const translate = async (params: TranslateTextParams): Promise<string> => {
+      requests.push(params.text);
+      return "[TRANSLATE_0]一样[/TRANSLATE_0]\n[TRANSLATE_1]一样[/TRANSLATE_1]";
+    };
+
+    const outcome = await translateLines(lines, config, { cache, translate }, "subtitle", {});
+
+    expect(outcome.lines).toEqual(["一样", "缓存B", "一样"]);
+    expect(requests).toHaveLength(1);
   });
 });

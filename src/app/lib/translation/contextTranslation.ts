@@ -118,8 +118,17 @@ const NUMBERED_TRANSLATE_RE = /\[TRANSLATE_(\d+)\]([\s\S]*?)\[\/(?:TRANSLATE|TRA
  * guard below distinguish "model failed to translate this line" from "this line
  * was never a translation target". Omitting it assumes every slot is a real
  * target (legacy behavior — fine for callers that pre-filter blank lines).
+ *
+ * `adjacent[i]` (optional) says whether slot i is physically adjacent to slot
+ * i-1 in the SOURCE document. Context batching compacts the not-yet-translated
+ * slots into a contiguous 0..K-1 marker list, so neighbours in `sourceLines`
+ * may actually sit far apart in the file (a cached / pre-filled line in
+ * between). The merge guard may only blame the predecessor when the two slots
+ * really are adjacent — a gap on a non-adjacent target is an omission, not a
+ * merge. Omitting `adjacent` assumes all slots are adjacent (legacy behavior,
+ * correct for dense callers whose arrays are contiguous by construction).
  */
-export const extractTranslatedLinesWithNumbers = (response: string, expectedCount: number, sourceLines?: string[], contextLines?: string[]): string[] => {
+export const extractTranslatedLinesWithNumbers = (response: string, expectedCount: number, sourceLines?: string[], contextLines?: string[], adjacent?: readonly boolean[]): string[] => {
   // Initialize with empty strings to ensure consistent return type
   const results = new Array<string>(expectedCount).fill("");
 
@@ -179,6 +188,10 @@ export const extractTranslatedLinesWithNumbers = (response: string, expectedCoun
   const satisfied = results.map((r, i) => r !== "" || blankSource(i));
   for (let i = 1; i < expectedCount; i++) {
     if (satisfied[i]) continue;
+    // The previous SLOT is not the previous SOURCE line (a cached/pre-filled
+    // line sits between them) → the gap is an omission, not a merge; discarding
+    // the predecessor would blank a correct translation for nothing.
+    if (adjacent && !adjacent[i]) continue;
     // Walk back across blank-source slots: a stripped ASS tag-only line can sit
     // MID-sentence, so the merged content may live in the nearest CONTENT slot
     // before the gap, not the literally adjacent (blank) one. Without the walk,
@@ -291,12 +304,16 @@ const CONTEXT_DESCRIPTIONS = {
  *     源文相同 → 同译是正确输出)
  * 连续 3+ 槽同译按同一簇全部纳入。返回去重升序的槽位下标。
  */
-export const findAdjacentDuplicateSlots = (results: readonly string[], sourceLines: readonly string[]): number[] => {
+export const findAdjacentDuplicateSlots = (results: readonly string[], sourceLines: readonly string[], adjacent?: readonly boolean[]): number[] => {
   const hit = new Set<number>();
   for (let j = 0; j + 1 < results.length; j++) {
     const a = (results[j] ?? "").trim();
     const b = (results[j + 1] ?? "").trim();
     if (a === "" || a !== b) continue;
+    // 合并只可能发生在【物理相邻】的两行之间。上下文批把待译槽压成连续
+    // 编号,相邻下标未必相邻于源文件(中间夹着缓存/预填行)——那时两行同译
+    // 是巧合,复译纯属浪费,别当合并去触发单行重译。
+    if (adjacent && !adjacent[j + 1]) continue;
     const sa = (sourceLines[j] ?? "").trim();
     const sb = (sourceLines[j + 1] ?? "").trim();
     if (isBlankLine(sa) || isBlankLine(sb) || sa === sb) continue;
