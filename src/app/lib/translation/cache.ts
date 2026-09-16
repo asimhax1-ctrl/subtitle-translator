@@ -123,6 +123,11 @@ export const generateCacheSuffix = ({ sourceLanguage, targetLanguage, translatio
   return base;
 };
 
+export const generateContextCacheKeys = (lines: string[], cacheSuffix: string, documentType: string, contextWindow: number): string[] => {
+  const documentHash = SparkMD5.hash(JSON.stringify([documentType, contextWindow, lines]));
+  return lines.map((_, index) => `t_context_v1_${documentHash}_${index}_${cacheSuffix}`);
+};
+
 export const generateCacheKey = (text: string, cacheSuffix: string): string => {
   // 孤立代理项(JSON 转义残留的半个 emoji,如 "\ud83d")会让 encodeURIComponent
   // 和 spark-md5(内部 unescape(encodeURIComponent)) 双双抛 URIError —— 该行

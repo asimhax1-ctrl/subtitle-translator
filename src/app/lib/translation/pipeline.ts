@@ -23,7 +23,7 @@ import SparkMD5 from "spark-md5";
 import type { RuntimeGlobals, TranslateTextParams, TranslationConfig, TranslationMethod } from "./types";
 import { LLM_MODELS, deriveThinkingParams } from "./registry";
 import { translationServices } from "./services";
-import { generateCacheKey, generateCacheSuffix } from "./cache";
+import { generateCacheKey, generateCacheSuffix, generateContextCacheKeys } from "./cache";
 import { cleanTranslatedText, splitTextIntoChunks } from "./utils";
 import { DEFAULT_SYSTEM_PROMPT, DEFAULT_USER_PROMPT } from "./config";
 import { applyGlossaryToText, buildGlossaryPromptBlock, buildStrictGlossaryPromptBlock, filterTermsMatchingText, findGlossaryViolations, type GlossaryTerm } from "./glossary";
@@ -663,6 +663,7 @@ const translateWithContext = async (
   // (先保底再 min)会在 contentLines 为空时得到步长 0 —— 循环虽不会进入,但
   // 步长为 0 是个不该存在的状态。
   const initialContextWindow = Math.max(1, Math.min(positiveInt(runtimeConfig.contextWindow, 20), contentLines.length));
+  const contextCacheKeys = cache ? generateContextCacheKeys(contentLines, cacheSuffix, documentType, initialContextWindow) : [];
   const translatedLines = new Array(contentLines.length);
   const MAX_CONTEXT_RETRIES = 2; // Maximum times to reduce context window
 
@@ -691,7 +692,7 @@ const translateWithContext = async (
     await prefillFromLineCache(
       contentLines,
       translatedLines,
-      (texts) => cache.getMany(texts.map((text) => generateCacheKey(text, cacheSuffix))),
+      (_texts, indices) => cache.getMany(indices.map((index) => contextCacheKeys[index])),
       // 只做 leak-through(纯替换),【不】走 enforceGlossaryOnLine ——
       // 那里面的严格重译会在这个串行循环里逐条发请求,见 postProcess 的注释。
       (_source, cached) => applyGlossary(ctx, cached, runtimeConfig.targetLanguage),
@@ -832,10 +833,7 @@ const translateWithContext = async (
           translatedLines[slot] = enforced;
           // 实时流:这一槽立刻可见,不等整批 20-60s 的请求全部回来。
           ctx.emitLine?.({ index: slot, original: pendingSources[j], translation: enforced });
-          // Cache the finalized line by its source text so a future run skips
-          // it (see prefillFromLineCache above). Survives the batch-level purge
-          // because it's keyed by the single line, not the batch window.
-          if (cache) void cache.set(generateCacheKey(pendingSources[j], cacheSuffix), translatedLines[slot]);
+          if (cache) await cache.set(contextCacheKeys[slot], translatedLines[slot]);
         }
       }
 

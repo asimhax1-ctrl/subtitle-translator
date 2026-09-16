@@ -45,7 +45,7 @@ export const isBlankLine = (line: string | undefined): boolean => !(line ?? "").
 export const prefillFromLineCache = async (
   contentLines: string[],
   translatedLines: (string | undefined)[],
-  cacheGetMany: (texts: string[]) => Promise<(string | null)[]>,
+  cacheGetMany: (texts: string[], indices: number[]) => Promise<(string | null)[]>,
   /**
    * 命中项落盘【前】的加工。必须传术语表 enforcement:同一批缓存键里混着两种
    * 内容 —— 上下文路径存的是已 enforce 的成品,而 translateCore(逐行/chunk
@@ -74,7 +74,7 @@ export const prefillFromLineCache = async (
 
   let hits: (string | null)[];
   try {
-    hits = await cacheGetMany(pending.map((i) => contentLines[i]));
+    hits = await cacheGetMany(pending.map((i) => contentLines[i]), pending);
   } catch {
     return; // treat a failed batch lookup as all-miss — the lines translate normally
   }

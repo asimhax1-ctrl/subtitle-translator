@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { translateLines, type PipelineCache, type PipelineRuntimeConfig } from "@/app/lib/translation/pipeline";
-import { generateCacheKey, generateCacheSuffix } from "@/app/lib/translation/cache";
+import { generateCacheKey, generateCacheSuffix, generateContextCacheKeys } from "@/app/lib/translation/cache";
 import { DEFAULT_SYSTEM_PROMPT, DEFAULT_USER_PROMPT } from "@/app/lib/translation/config";
 import type { TranslateTextParams } from "@/app/lib/translation/types";
 
@@ -67,6 +67,66 @@ const makeTranslate = (requests: string[]) => async (params: TranslateTextParams
     .join("\n");
 };
 
+describe("context resume isolation", () => {
+  it("builds stable keys distinct by position, document, format, and window", () => {
+    const lines = ["Same", "Same"];
+    const keys = generateContextCacheKeys(lines, "suffix", "subtitle", 2);
+    expect(new Set(keys).size).toBe(2);
+    expect(generateContextCacheKeys([...lines], "suffix", "subtitle", 2)).toEqual(keys);
+    expect(generateContextCacheKeys(["Same", "Other"], "suffix", "subtitle", 2)[0]).not.toBe(keys[0]);
+    expect(generateContextCacheKeys(lines, "suffix", "markdown", 2)[0]).not.toBe(keys[0]);
+    expect(generateContextCacheKeys(lines, "suffix", "subtitle", 1)[0]).not.toBe(keys[0]);
+  });
+
+  it("looks up occurrence keys without shifting past blank source slots", async () => {
+    const lines = ["Same", "", "Same"];
+    const config = makeConfig(3);
+    const cache = makeCache();
+    const keys = generateContextCacheKeys(lines, suffixFor(config), "subtitle", 3);
+    cache.store.set(keys[0], "第一");
+    cache.store.set(keys[2], "第二");
+    const requests: string[] = [];
+    const outcome = await translateLines(lines, config, { cache, translate: makeTranslate(requests) }, "subtitle");
+    expect(outcome.lines).toEqual(["第一", "", "第二"]);
+    expect(requests).toEqual([]);
+  });
+  it("preserves distinct translations of repeated source lines on resume", async () => {
+    const lines = ["Right.", "Right."];
+    const config = makeConfig(2);
+    const cache = makeCache();
+    const requests: string[] = [];
+    const deps = { cache, translate: makeTranslate(requests) };
+    const first = await translateLines(lines, config, deps, "subtitle");
+    const resumed = await translateLines(lines, config, deps, "subtitle");
+
+    expect(first.lines).toEqual(["译文0", "译文1"]);
+    expect(resumed.lines).toEqual(first.lines);
+    expect(requests).toHaveLength(1);
+  });
+
+  it("does not reuse a context translation in another document", async () => {
+    const config = makeConfig(2);
+    const cache = makeCache();
+    const requests: string[] = [];
+    const deps = { cache, translate: makeTranslate(requests) };
+    await translateLines(["Right.", "Turn here"], config, deps, "subtitle");
+    await translateLines(["Right.", "That is correct"], config, deps, "subtitle");
+
+    expect(countTargets(requests[1])).toBe(2);
+  });
+
+  it("does not prefill context targets from standalone line translations", async () => {
+    const config = makeConfig(2);
+    const cache = makeCache();
+    cache.store.set(generateCacheKey("Right.", suffixFor(config)), "Standalone");
+    const requests: string[] = [];
+    const outcome = await translateLines(["Right.", "Turn here"], config, { cache, translate: makeTranslate(requests) }, "subtitle");
+
+    expect(countTargets(requests[0])).toBe(2);
+    expect(outcome.lines).toEqual(["译文0", "译文1"]);
+  });
+});
+
 describe("context batch marker targeting", () => {
   it("targets only untranslated slots in a partially cached batch", async () => {
     const lines = ["A", "B", "C", "D"];
@@ -74,8 +134,9 @@ describe("context batch marker targeting", () => {
     const cache = makeCache();
     const suffix = suffixFor(config);
     // B and D are already translated (resume from per-line cache).
-    cache.store.set(generateCacheKey("B", suffix), "缓存B");
-    cache.store.set(generateCacheKey("D", suffix), "缓存D");
+    const keys = generateContextCacheKeys(lines, suffix, "subtitle", lines.length);
+    cache.store.set(keys[1], "缓存B");
+    cache.store.set(keys[3], "缓存D");
 
     const requests: string[] = [];
     const outcome = await translateLines(lines, config, { cache, translate: makeTranslate(requests) }, "subtitle", {});
@@ -101,7 +162,7 @@ describe("context batch marker targeting", () => {
     const cache = makeCache();
     const suffix = suffixFor(config);
     // L5 sits inside the middle batch's target range but is already decided.
-    cache.store.set(generateCacheKey("L5", suffix), "缓存L5");
+    cache.store.set(generateContextCacheKeys(lines, suffix, "subtitle", 4)[5], "缓存L5");
 
     const requests: string[] = [];
     const outcome = await translateLines(lines, config, { cache, translate: makeTranslate(requests) }, "subtitle", {});
