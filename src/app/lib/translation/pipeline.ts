@@ -710,18 +710,17 @@ const translateWithContext = async (
   }
 
   const translateSingleBatch = async (batchStart: number, batchEnd: number, contextWindow: number): Promise<boolean> => {
-    // Every target slot already decided (pre-filled from cache or an earlier
-    // batch) → skip the model call entirely; sending it would re-translate
-    // already-good lines and burn tokens for a result the write-once guard
-    // would discard anyway.
-    let hasPending = false;
+    // Only slots still undefined are translation targets. A slot already decided
+    // (blank pre-fill, per-line cache prefill, or an earlier batch) must NOT be
+    // re-sent as [TRANSLATE_n]: the write-once guard discards its result anyway,
+    // so targeting it only inflates input+output tokens and can perturb the
+    // model's line numbering for the lines that do need translating.
+    const pendingLocal: number[] = [];
     for (let k = batchStart; k < batchEnd; k++) {
-      if (translatedLines[k] === undefined) {
-        hasPending = true;
-        break;
-      }
+      if (translatedLines[k] === undefined) pendingLocal.push(k);
     }
-    if (!hasPending) return true;
+    // Every target slot already decided → skip the model call entirely.
+    if (pendingLocal.length === 0) return true;
 
     const contextPadding = Math.min(MAX_CONTEXT_PADDING, Math.max(1, Math.floor(contextWindow / 2)));
     const contextStart = Math.max(0, batchStart - contextPadding);
@@ -730,10 +729,20 @@ const translateWithContext = async (
     const targetStartIndex = batchStart - contextStart;
     const targetEndIndex = batchEnd - contextStart;
 
+    // Original target index (relative to batchStart) → contiguous marker ordinal
+    // 0..K-1. Ordinals stay contiguous because buildContextPrompt's numbering
+    // contract (and extraction's 1-based-overflow guard) expects 0..K-1; output
+    // maps back through pendingLocal to the original slot.
+    const targetOrdinal = new Map<number, number>();
+    pendingLocal.forEach((k, ordinal) => targetOrdinal.set(k - batchStart, ordinal));
+
     const contextWithMarkers = contextLines
       .map((line, index) => {
         if (index >= targetStartIndex && index < targetEndIndex) {
-          return `[TRANSLATE_${index - targetStartIndex}]${line}[/TRANSLATE_${index - targetStartIndex}]`;
+          const ordinal = targetOrdinal.get(index - targetStartIndex);
+          if (ordinal !== undefined) return `[TRANSLATE_${ordinal}]${line}[/TRANSLATE_${ordinal}]`;
+          // Decided line inside the target range: context, not a target.
+          return `[CONTEXT]${line}[/CONTEXT]`;
         }
         return `[CONTEXT]${line}[/CONTEXT]`;
       })
@@ -748,19 +757,19 @@ const translateWithContext = async (
           // The built prompt retains the literal ${content} placeholder — the
           // marker block (params.text) is inserted LAST by getAIModelPromptParts's
           // function-form replacement, after all template variables resolved.
-          userPrompt: buildContextPrompt(runtimeConfig.userPrompt ?? DEFAULT_USER_PROMPT, batchEnd - batchStart, documentType),
+          userPrompt: buildContextPrompt(runtimeConfig.userPrompt ?? DEFAULT_USER_PROMPT, pendingLocal.length, documentType),
         },
         ctx,
         fullText,
       );
 
-      // sourceLines slice lets the extraction's merge guard tell real gaps from
-      // blank-source slots (which legitimately come back empty).
-      const batchSources = contentLines.slice(batchStart, batchEnd);
+      // Sources parallel to the K targets (ascending, non-blank by construction:
+      // blank lines were pre-filled, so they never reach the pending list).
+      const pendingSources = pendingLocal.map((k) => contentLines[k]);
       // Pass the full context window (target slice + ±padding) so the echo guard
       // can catch a TRANSLATE slot that copied a forward-[CONTEXT] source line
       // verbatim (the NHK 红白 ≈+9 misalignment), not just within-batch echoes.
-      const translatedBatch = extractTranslatedLinesWithNumbers(result || "", batchEnd - batchStart, batchSources, contextLines);
+      const translatedBatch = extractTranslatedLinesWithNumbers(result || "", pendingLocal.length, pendingSources, contextLines);
 
       // 「相邻同译」修复(subtitle-translator#44 的残余形态:合并且补齐下一槽,
       // 块数正确、无缺口,提取层守卫全部放行)。检测只当【触发器】,裁决交给
@@ -771,11 +780,11 @@ const translateWithContext = async (
       // 出了怪,满并发轰回去是错误的反射。复译为空/失败 → 置 "" 落进下方既有的
       // 缺口机制(软填/降窗重试);批级缓存先清,否则重试从缓存重放同一个坏响应。
       // 只修【未定稿】的槽(write-once):已预填的槽提交时本来就会被丢弃。
-      const dupSlots = findAdjacentDuplicateSlots(translatedBatch, batchSources).filter((j) => translatedLines[batchStart + j] === undefined);
+      const dupSlots = findAdjacentDuplicateSlots(translatedBatch, pendingSources).filter((j) => translatedLines[pendingLocal[j]] === undefined);
       if (dupSlots.length > 0) {
         ctx.noteError(
           new Error(
-            `adjacent duplicate translations at lines ${dupSlots.map((j) => batchStart + j + 1).join(", ")} (sources differ) — the model likely merged lines; re-translating each independently.`,
+            `adjacent duplicate translations at lines ${dupSlots.map((j) => pendingLocal[j] + 1).join(", ")} (sources differ) — the model likely merged lines; re-translating each independently.`,
           ),
         );
         if (cache) await cache.delete(generateCacheKey(contextWithMarkers, cacheSuffix));
@@ -783,7 +792,7 @@ const translateWithContext = async (
           const j = dupSlots[d];
           if (run?.signal.aborted) throw new Error("Translation aborted");
           try {
-            const one = await translateSingle(batchSources[j], cacheSuffix, runtimeConfig, ctx, fullText);
+            const one = await translateSingle(pendingSources[j], cacheSuffix, runtimeConfig, ctx, fullText);
             // 换行拍平成空格,同 chunk 营救:单行译文里混进换行会破坏逐行装配。
             translatedBatch[j] = one && one.trim() ? one.replace(/\r?\n/g, " ") : "";
           } catch (err) {
@@ -802,29 +811,31 @@ const translateWithContext = async (
       // of the same file reach the live service instead of replaying the bad
       // response forever — without this, one marker-dropped reply makes a
       // short file permanently untranslatable until the cache is cleared.
-      const hasRealGap = translatedBatch.some((r, j) => r === "" && !isBlankLine(batchSources[j]));
+      const hasRealGap = translatedBatch.some((r, j) => r === "" && !isBlankLine(pendingSources[j]));
       if (hasRealGap && cache) {
         await cache.delete(generateCacheKey(contextWithMarkers, cacheSuffix));
       }
       for (let j = 0; j < translatedBatch.length; j++) {
+        // Ordinal j maps back through pendingLocal to the original slot.
+        const slot = pendingLocal[j];
         // `!== ""` not truthiness — a line legitimately translated to "0" must
         // count as done. `=== undefined` write-once guard: never overwrite a
         // decided slot (notably pre-filled blank-source lines, which a model
         // may hallucinate content for).
-        if (batchStart + j < contentLines.length && translatedBatch[j] !== "" && translatedLines[batchStart + j] === undefined) {
+        if (slot !== undefined && translatedBatch[j] !== "" && translatedLines[slot] === undefined) {
           // Glossary enforcement on SUCCESSFUL translations only: leak-through
           // + mistranslation check with one strict single-line retry. Failed
           // slots get soft-filled with the raw source later (see "Final
           // soft-fail"), so a fully-failed line stays the untouched original
           // instead of a half-localized mix like "斯派克, hi".
-          const enforced = await enforceGlossaryOnLine(batchSources[j], translatedBatch[j], cacheSuffix, runtimeConfig, ctx, fullText);
-          translatedLines[batchStart + j] = enforced;
+          const enforced = await enforceGlossaryOnLine(pendingSources[j], translatedBatch[j], cacheSuffix, runtimeConfig, ctx, fullText);
+          translatedLines[slot] = enforced;
           // 实时流:这一槽立刻可见,不等整批 20-60s 的请求全部回来。
-          ctx.emitLine?.({ index: batchStart + j, original: batchSources[j], translation: enforced });
+          ctx.emitLine?.({ index: slot, original: pendingSources[j], translation: enforced });
           // Cache the finalized line by its source text so a future run skips
           // it (see prefillFromLineCache above). Survives the batch-level purge
           // because it's keyed by the single line, not the batch window.
-          if (cache) void cache.set(generateCacheKey(batchSources[j], cacheSuffix), translatedLines[batchStart + j]);
+          if (cache) void cache.set(generateCacheKey(pendingSources[j], cacheSuffix), translatedLines[slot]);
         }
       }
 
