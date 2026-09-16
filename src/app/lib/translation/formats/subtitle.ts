@@ -847,6 +847,11 @@ const LANG_SCRIPT: Record<string, string> = {
   prs: "arabic",
   ckb: "arabic",
   ug: "arabic",
+  // Hausa (Ajami / Arabic-script nativelabel). Left unmapped it fell back to
+  // latin, so resolveBilingualFonts handed a CJK partner's YaHei to Arabic
+  // script (no glyphs) and exported tofu. Latin Hausa still renders in Arial,
+  // which covers both scripts — so "arabic" is the safe bucket.
+  ha: "arabic",
   // 希伯来文自成一系(意第绪语也写希伯来文)。字体两边都落在 Arial,
   // 但预览示例文字按 script 取 —— 混进 arabic 会让希伯来语用户看到阿拉伯语示例。
   he: "hebrew",
