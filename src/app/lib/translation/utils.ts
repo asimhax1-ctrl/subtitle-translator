@@ -126,7 +126,16 @@ export const getAIModelPromptParts = (content: string, userPrompt: string, targe
   const render = (tpl: string): string =>
     usesFullText ? tpl.replace(/\$\{(?:fullText|content)\}/g, (m) => (m === "${fullText}" ? full : content)) : tpl.replaceAll("${content}", () => content);
   const at = prompt.indexOf("${content}");
-  if (at < 0) return { prefix: render(prompt), suffix: "" };
+  if (at < 0) {
+    // 无 ${content} 占位符的模板【必须】补上内容,不能只发指令。用户自定义
+    // prompt 漏掉占位符时,此前整份源文一个字节都不会到达模型:模型回一句
+    // "没看到要翻译的内容",而这一轮按成功记账(软填/失败面板都不响)——
+    // 正是 subtitle-translator#68 的成因之一。放在 suffix 而不是前缀里:
+    // 前缀保持逐请求字节稳定,provider 前缀缓存(Claude cache_control、
+    // OpenAI 字节前缀)照常命中。用了 ${fullText} 的模板已经拿到全文,
+    // 不再重复追加(否则每行都把该行内容发两遍)。
+    return { prefix: render(prompt), suffix: usesFullText || !content ? "" : `\n\n${content}` };
+  }
   return { prefix: render(prompt.slice(0, at)), suffix: render(prompt.slice(at)) };
 };
 

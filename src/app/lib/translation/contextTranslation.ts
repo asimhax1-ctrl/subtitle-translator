@@ -319,11 +319,9 @@ export const buildContextPrompt = (baseUserPrompt: string, batchSize: number, do
   // "模型回显残渣") would have that echo win slot 0 under the first-wins rule,
   // shipping the literal word "translation" on line 0 — flagged success + cached.
   // `[TRANSLATE_X]` can't match `\d+`, so an echo is inert. Keep it non-numeric.
-  return baseUserPrompt.replace(
-    "${content}",
-    () => `Context: This is ${
-      ctx.description
-    }. Only translate the lines marked with [TRANSLATE_X][/TRANSLATE_X] tags (where X is the line number). Use the [CONTEXT][/CONTEXT] lines for understanding but do not translate them. ${ctx.style}
+  const markerBlock = `Context: This is ${
+    ctx.description
+  }. Only translate the lines marked with [TRANSLATE_X][/TRANSLATE_X] tags (where X is the line number). Use the [CONTEXT][/CONTEXT] lines for understanding but do not translate them. ${ctx.style}
 
 CRITICAL REQUIREMENTS:
 1. You MUST translate ALL ${batchSize} lines marked with [TRANSLATE_X] tags
@@ -332,6 +330,11 @@ CRITICAL REQUIREMENTS:
 4. NEVER merge lines: when one sentence spans several marked lines, translate each line's fragment separately under its own number — do NOT combine multiple lines' content into a single tag; a tag may be empty ONLY if its source line is empty
 5. ${ctx.notes}
 
-\${content}`
-  );
+\${content}`;
+  // 模板有 ${content} → 在占位符处插入;没有 → 【追加】,绝不返回原模板。
+  // replace 在无匹配时原样返回,旧实现于是让上下文批的指令块整个消失:
+  // 模型收到没有 [TRANSLATE_X] 说明、也没有 ${content} 插入点的模板,而
+  // getAIModelPromptParts 又不再补内容(#68 的复合形态)。两条路径都收口到
+  // 「markerBlock 一定进入模板、模板一定含 ${content} 插入点」。
+  return baseUserPrompt.includes("${content}") ? baseUserPrompt.replace("${content}", () => markerBlock) : `${baseUserPrompt}\n\n${markerBlock}`;
 };
