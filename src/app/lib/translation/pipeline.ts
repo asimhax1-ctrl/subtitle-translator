@@ -1257,9 +1257,17 @@ const runTranslateLines = async (
       // (baseDelay × lines / concurrency — ~20s on a 1000-line file). Used
       // only to SKIP the delay below; the translate path is unchanged (the
       // per-line cache check inside translateSingleWithGlossary still runs).
+      // A rejected lookup (transient IndexedDB failure) is treated as all-miss
+      // — same convention as the context path's prefillFromLineCache — instead
+      // of failing the whole run before any request is made.
       const cacheHitIndices = new Set<number>();
       if (cache) {
-        const hits = await cache.getMany(contentLines.map((line) => generateCacheKey(line, cacheSuffix)));
+        let hits: (string | null)[];
+        try {
+          hits = await cache.getMany(contentLines.map((line) => generateCacheKey(line, cacheSuffix)));
+        } catch {
+          hits = contentLines.map(() => null);
+        }
         // truthy 而非 `!= null` —— 与 translateCore / prefillFromLineCache 的
         // 命中判据【必须一致】(它们都把空串当未命中并真去翻译)。判成命中的话,
         // 这些行会跳过 abortableSleep(baseDelay) 却仍然发出真实请求:整批以满

@@ -38,6 +38,16 @@ test("HTTP gateway authentication errors preserve their status and do not cancel
   }
 });
 
+test("a failing batch cache lookup must not fail the run", async () => {
+  const translate = vi.fn().mockResolvedValue("مرحبا");
+  const outcome = await translateLines(["First", "Hello"], { ...config, useCache: true }, {
+    translate,
+    cache: { get: vi.fn().mockResolvedValue(null), getMany: vi.fn().mockRejectedValue(new Error("IDB quirk")), set: vi.fn().mockResolvedValue(undefined), delete: vi.fn().mockResolvedValue(undefined) },
+  });
+  expect(outcome.lines).toEqual(["مرحبا", "مرحبا"]);
+  expect(outcome.failures).toEqual([]);
+});
+
 test.each([401, 403])("HTTP %s still aborts the run before queued requests execute", async (status) => {
   const error = Object.assign(new Error("Credentials rejected"), { status });
   const translate = vi.fn().mockRejectedValueOnce(error).mockResolvedValue("مرحبا");
