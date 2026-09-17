@@ -25,6 +25,8 @@ describe("appendArabicSystemPrompt", () => {
   it("appends Arabic-specific instructions when target language is Arabic", () => {
     const enhanced = appendArabicSystemPrompt(DEFAULT_SYSTEM_PROMPT, "ar");
     expect(enhanced).toContain("Modern Standard Arabic");
+    expect(enhanced).toContain("Signore");
+    expect(enhanced).toContain("سيدي");
     expect(enhanced).toContain(DEFAULT_SYSTEM_PROMPT);
     expect(enhanced.length).toBeGreaterThan(DEFAULT_SYSTEM_PROMPT.length);
   });

@@ -12,7 +12,12 @@ const ARABIC_SYSTEM_PROMPT_APPENDIX = `
 --- Arabic output instructions ---
 Translate into natural Modern Standard Arabic (العربية الفصحى), not literal word-for-word translation.
 - Keep character names and proper nouns consistent across the whole work; transliterate into common Arabic conventions.
-- Translate titles and honorifics (Mr., Mrs., Sir, Madam, Captain, Doctor, -san, -kun, -chan, -sama, senpai, sensei...) to match the on-screen social relationship, not literally.
+- Translate titles and honorifics to match the on-screen social relationship, not literally. Examples:
+  • "Signore" (Italian) → "سيدي" when addressing a man, never "يا رب".
+  • "Monsieur" / "Herr" → "سيدي" or "سيّدي" depending on formality.
+  • "Sensei" (Japanese) → "أستاذي" for a teacher/mentor, or keep "سينسي" when the Japanese term itself is intended.
+  • "Senpai" (Japanese) → "الزميل الأكبر" or keep "سينباي" when the term is intended.
+  • "-san", "-kun", "-chan", "-sama" → choose an Arabic title or keep the honorific transliterated, based on the relationship shown.
 - Preserve embedded foreign words (English, Italian, German, French, Japanese, Latin, etc.) when the scene expects them to stay foreign; transliterate greetings and honorifics intentionally.
 - Match verb/adjective gender and number to the intended speaker or referent.
 - Keep subtitles cinematic, concise, and subtitle-length appropriate.
