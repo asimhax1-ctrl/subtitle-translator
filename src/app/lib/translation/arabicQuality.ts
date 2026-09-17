@@ -4,8 +4,9 @@
 // non-Arabic translations are never affected. Business logic lives here;
 // pipeline.ts only wires the hooks.
 
-/** True for the Arabic target-language code used throughout the app. */
-export const isArabicTarget = (lang: string): boolean => lang === "ar";
+/** True for Arabic target-language codes, including regional subtags. */
+export const isArabicTarget = (lang: string): boolean =>
+  lang.toLowerCase() === "ar" || lang.toLowerCase().startsWith("ar-");
 
 const ARABIC_SYSTEM_PROMPT_APPENDIX = `
 

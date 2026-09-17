@@ -14,10 +14,16 @@ describe("isArabicTarget", () => {
     expect(isArabicTarget("ar")).toBe(true);
   });
 
+  it("returns true for Arabic regional subtags", () => {
+    expect(isArabicTarget("ar-SA")).toBe(true);
+    expect(isArabicTarget("ar-EG")).toBe(true);
+    expect(isArabicTarget("ar-AE")).toBe(true);
+  });
+
   it("returns false for non-Arabic language codes", () => {
     expect(isArabicTarget("en")).toBe(false);
     expect(isArabicTarget("zh")).toBe(false);
-    expect(isArabicTarget("ar-SA")).toBe(false);
+    expect(isArabicTarget("en-ar")).toBe(false);
   });
 });
 
