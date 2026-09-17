@@ -89,6 +89,26 @@ describe("normalizeArabicPunctuation", () => {
   it("leaves non-Arabic text unchanged", () => {
     expect(normalizeArabicPunctuation("Hello, world!")).toBe("Hello, world!");
   });
+
+  it("preserves URLs and query strings", () => {
+    expect(normalizeArabicPunctuation("زور https://x.com/a?b=1&c=2 الآن")).toBe("زور https://x.com/a?b=1&c=2 الآن");
+  });
+
+  it("preserves email addresses", () => {
+    expect(normalizeArabicPunctuation("راسلني a.b@x.com, شكرا")).toBe("راسلني a.b@x.com، شكرا");
+  });
+
+  it("preserves numeric literals with Latin grouping separators", () => {
+    expect(normalizeArabicPunctuation("القيمة 1,000 دولار")).toBe("القيمة 1,000 دولار");
+  });
+
+  it("preserves preserved Latin fragments in mixed dialogue", () => {
+    expect(normalizeArabicPunctuation('اضغط ثم اكتب "What?"')).toBe('اضغط ثم اكتب "What?"');
+  });
+
+  it("preserves ASS override tags", () => {
+    expect(normalizeArabicPunctuation("{\\pos(400,570)}مرحبا, كيف حالك?")).toBe("{\\pos(400,570)}مرحبا، كيف حالك؟");
+  });
 });
 
 describe("extractLikelyProperNouns", () => {

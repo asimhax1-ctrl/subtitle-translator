@@ -93,13 +93,56 @@ const ARABIC_PUNCTUATION_MAP: Record<string, string> = {
   ";": "؛",
 };
 
+const ARABIC_SCRIPT_RE = /[\u0600-\u06FF]/;
+
 /**
  * Normalize punctuation inside Arabic text to Arabic-appropriate marks.
- * Non-Arabic text is left untouched so mixed-language lines stay readable.
+ * Only converts punctuation that is adjacent to Arabic script; Latin-only
+ * fragments (URLs, emails, numbers, preserved foreign words, ASS/ICU braces)
+ * are left untouched so mixed-language lines stay readable and subtitle
+ * structure/tags are not corrupted.
  */
 export const normalizeArabicPunctuation = (text: string): string => {
-  if (!text || !/[\u0600-\u06FF]/.test(text)) return text;
-  return text.replace(/[?,,;]/g, (ch) => ARABIC_PUNCTUATION_MAP[ch] ?? ch);
+  if (!text || !ARABIC_SCRIPT_RE.test(text)) return text;
+
+  // Protect spans that must keep Latin punctuation verbatim: ASS/ICU braces,
+  // URLs, and email addresses. Restore them after normalizing.
+  const protectedSpans = new Map<string, string>();
+  let counter = 0;
+  const protect = (match: string): string => {
+    const key = `__PROTECT_${counter++}__`;
+    protectedSpans.set(key, match);
+    return key;
+  };
+
+  let protectedText = text
+    .replace(/\{[^{}]*\}/g, protect)
+    .replace(/https?:\/\/\S+/gi, protect)
+    // Email: stop before trailing punctuation so the following Arabic comma
+    // (e.g. "a.b@x.com, شكرا") is not swallowed into the protected span.
+    .replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, protect);
+
+  // Only convert a punctuation mark when it has an Arabic-script neighbor
+  // (skipping adjacent whitespace). This keeps Latin fragments ("What?",
+  // "1,000", code) intact while converting Arabic-script punctuation
+  // ("مرحبا, كيف حالك?").
+  protectedText = protectedText.replace(/[?,,;]/g, (ch, offset, str) => {
+    const findNeighbor = (start: number, step: 1 | -1): string => {
+      for (let i = start; i >= 0 && i < str.length; i += step) {
+        const c = str.charAt(i);
+        if (!/\s/.test(c)) return c;
+      }
+      return "";
+    };
+    const prev = findNeighbor(offset - 1, -1);
+    const next = findNeighbor(offset + 1, 1);
+    if (ARABIC_SCRIPT_RE.test(prev) || ARABIC_SCRIPT_RE.test(next)) {
+      return ARABIC_PUNCTUATION_MAP[ch] ?? ch;
+    }
+    return ch;
+  });
+
+  return protectedText.replace(/__PROTECT_\d+__/g, (key) => protectedSpans.get(key) ?? key);
 };
 
 // Common words that may be capitalized by chance but are not proper nouns.
