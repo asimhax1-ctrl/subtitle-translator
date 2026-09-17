@@ -636,10 +636,20 @@ const repairUntranslatedSource = async (
   fullText?: string,
 ): Promise<string> => {
   if (!isArabicTarget(config.targetLanguage) || !LLM_MODELS.includes(config.translationMethod)) return translated;
-  if (!detectUntranslatedSource(sourceLine, translated)) return translated;
+
+  // Build the allowlist for the detector: glossary source/target terms and
+  // discovered names are permitted to remain in Latin form; without this,
+  // intentional preservation of proper nouns triggers a wasted context-free
+  // repair that can replace a good batch translation with an isolated one.
+  const glossaryTerms = ctx.getGlossaryTerms(config.targetLanguage);
+  const allowedTerms = [
+    ...glossaryTerms.map((t) => t.source.trim()),
+    ...glossaryTerms.map((t) => t.target.trim()),
+  ];
+  if (!detectUntranslatedSource(sourceLine, translated, allowedTerms)) return translated;
 
   const strictInstruction =
-    "\n\nCRITICAL: The previous output still contained untranslated source text. Translate the ENTIRE line into Arabic. Only proper names and user glossary terms may remain in their original form; everything else must be in Arabic.";
+    "\n\nCRITICAL: The previous output still contained untranslated source text. Translate the ENTIRE line into Arabic. Only proper names, user glossary terms, and foreign honorifics may remain in their original form; everything else must be in Arabic.";
   try {
     const retrySuffix = `${cacheSuffix}_ut${SparkMD5.hash(sourceLine)}`;
     const retried = await translateSingle(

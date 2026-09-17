@@ -67,6 +67,23 @@ describe("detectUntranslatedSource", () => {
   it("ignores source lines that have no translatable Latin text", () => {
     expect(detectUntranslatedSource("123", "123")).toBe(false);
   });
+
+  it("ignores allowed proper names and honorifics", () => {
+    const allowed = ["New York", "Herr Schmidt", "Sensei"];
+    expect(detectUntranslatedSource("I love New York", "أحب New York", allowed)).toBe(false);
+    expect(detectUntranslatedSource("Guten Morgen, Herr Schmidt.", "صباح الخير، Herr Schmidt.", allowed)).toBe(false);
+    expect(detectUntranslatedSource("Good morning, Sensei.", "صباح الخير، Sensei.", allowed)).toBe(false);
+  });
+
+  it("ignores all-caps acronyms in the identity branch", () => {
+    expect(detectUntranslatedSource("NASA", "NASA")).toBe(false);
+    expect(detectUntranslatedSource("FBI", "FBI")).toBe(false);
+  });
+
+  it("still flags material leaks of non-allowed source text", () => {
+    expect(detectUntranslatedSource("Where are you going?", "أين أنت going?")).toBe(true);
+    expect(detectUntranslatedSource("Hello world", "مرحبا world")).toBe(true);
+  });
 });
 
 describe("normalizeArabicPunctuation", () => {

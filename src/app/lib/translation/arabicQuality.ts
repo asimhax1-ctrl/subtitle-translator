@@ -45,20 +45,47 @@ const MIN_SOURCE_TOKEN_LENGTH = 4;
 const isSignificantLatinToken = (token: string): boolean =>
   token.length >= MIN_SOURCE_TOKEN_LENGTH && token !== token.toUpperCase();
 
+// Foreign honorifics and address terms that the Arabic appendix explicitly
+// allows to remain in their original form (or be transliterated) depending on
+// context. They must not trigger the untranslated-source repair on their own.
+const FOREIGN_HONORIFICS = new Set([
+  "herr", "monsieur", "signore", "signor", "sensei", "senpai",
+  "san", "kun", "chan", "sama",
+]);
+
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /**
  * Detect whether an Arabic translation still accidentally contains original
  * source-language text. The check is conservative: it only flags lines where
  * a significant Latin word from the source appears verbatim in the translation,
  * or where the translation is essentially identical to the source.
  *
+ * `allowedTerms` lists source phrases (glossary sources, discovered names,
+ * honorifics) that are permitted to remain in Latin form. This prevents wasted
+ * repairs on intentional preservation of proper nouns and foreign honorifics.
+ *
  * Gated on the target being Arabic; callers should still pass the source
  * language so future variants can tune heuristics per script.
  */
-export const detectUntranslatedSource = (source: string, translated: string): boolean => {
-  if (!source || !translated || source === translated) return source.length > 0 && /\p{L}/u.test(source);
+export const detectUntranslatedSource = (source: string, translated: string, allowedTerms: string[] = []): boolean => {
+  if (!source || !translated) return false;
+
+  // Build a whitelist of Latin words that are allowed to survive.
+  const whitelist = new Set<string>();
+  for (const term of allowedTerms) {
+    for (const word of term.match(/[a-zA-Z]+/g) ?? []) {
+      if (isSignificantLatinToken(word)) whitelist.add(word.toLowerCase());
+    }
+  }
+  for (const word of FOREIGN_HONORIFICS) whitelist.add(word);
+
+  const extractSignificantTokens = (s: string): string[] =>
+    (s.match(/[a-zA-Z]+/g) ?? []).filter((t) => isSignificantLatinToken(t) && !whitelist.has(t.toLowerCase()));
 
   // If source and translation are essentially the same (ignoring case and
-  // diacritics), the line was not translated.
+  // diacritics), the line was not translated — unless every Latin token is an
+  // allowed acronym or proper name.
   const normalize = (s: string) =>
     s
       .toLowerCase()
@@ -66,24 +93,26 @@ export const detectUntranslatedSource = (source: string, translated: string): bo
       .replace(/[\u064B-\u065F\u0670\u0640]/g, "")
       .replace(/[^\p{L}\p{N}]/gu, "")
       .trim();
-  if (normalize(source) === normalize(translated) && normalize(source).length > 0) return true;
+  if (normalize(source) === normalize(translated) && normalize(source).length > 0) {
+    return extractSignificantTokens(source).length > 0;
+  }
 
   // Extract Latin tokens from the source and see if any significant one
   // survived verbatim in the translation.
-  const latinTokens = (source.match(/[a-zA-Z]+/g) ?? []).filter(isSignificantLatinToken);
+  const latinTokens = extractSignificantTokens(source);
   if (latinTokens.length === 0) return false;
 
   const lowerTranslated = translated.toLowerCase();
   let verbatimHits = 0;
   for (const token of latinTokens) {
     // Word-boundary match in the translation to avoid matching substrings.
-    const re = new RegExp(`(?<![a-zA-Z])${token}(?![a-zA-Z])`, "i");
+    const re = new RegExp(`(?<![a-zA-Z])${escapeRegExp(token)}(?![a-zA-Z])`, "i");
     if (re.test(lowerTranslated)) verbatimHits++;
   }
 
   // Flag when at least one significant source token leaked through, or when
   // most of the Latin text leaked through.
-  return verbatimHits > 0 && verbatimHits >= Math.min(1, Math.floor(latinTokens.length * 0.5));
+  return verbatimHits > 0 && verbatimHits >= Math.max(1, Math.floor(latinTokens.length * 0.5));
 };
 
 // Arabic punctuation normalization map. Only applied when target is Arabic.
