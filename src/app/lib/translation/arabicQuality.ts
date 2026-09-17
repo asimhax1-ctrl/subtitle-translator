@@ -96,3 +96,48 @@ export const normalizeArabicPunctuation = (text: string): string => {
   if (!text || !/[\u0600-\u06FF]/.test(text)) return text;
   return text.replace(/[?,,;]/g, (ch) => ARABIC_PUNCTUATION_MAP[ch] ?? ch);
 };
+
+// Common words that may be capitalized by chance but are not proper nouns.
+const COMMON_WORDS = new Set([
+  "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "from", "as", "is", "was", "are", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must", "shall", "can", "need", "dare", "ought", "used", "this", "that", "these", "those", "i", "you", "he", "she", "it", "we", "they", "my", "your", "his", "her", "its", "our", "their", "what", "which", "who", "when", "where", "why", "how", "all", "each", "every", "both", "few", "more", "most", "other", "some", "such", "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very", "just", "now", "then", "here", "there", "up", "down", "out", "off", "over", "under", "again", "further", "once", "also",
+]);
+
+const MIN_TERM_LENGTH = 3;
+const MIN_OCCURRENCES = 2;
+
+/**
+ * Extract likely proper nouns / recurring names from source text using a
+ * lightweight heuristic. Only Latin-script words are considered because the
+ * main use case is discovering foreign names that need consistent Arabic
+ * transliteration. The heuristic requires the word to appear at least twice
+ * and filters out a small list of common words.
+ */
+export const extractLikelyProperNouns = (text: string): string[] => {
+  if (!text) return [];
+  const counts = new Map<string, number>();
+  const words = text.match(/[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*/g) ?? [];
+  for (const word of words) {
+    const key = word.trim();
+    if (key.length < MIN_TERM_LENGTH) continue;
+    if (COMMON_WORDS.has(key.toLowerCase())) continue;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .filter(([, count]) => count >= MIN_OCCURRENCES)
+    .map(([word]) => word)
+    .sort();
+};
+
+const DISCOVERED_TERMS_HEADER = "\n\nRecurring names/terms discovered in this work — keep their Arabic transliteration consistent throughout:";
+
+/**
+ * Append a discovered-terms block to the system prompt for Arabic targets.
+ * The block is only added when terms were found and the target is Arabic.
+ * Idempotent: repeated calls with the same terms do not stack the block.
+ */
+export const appendDiscoveredTerms = (systemPrompt: string, targetLanguage: string, terms: string[]): string => {
+  if (!isArabicTarget(targetLanguage) || terms.length === 0) return systemPrompt;
+  const block = `${DISCOVERED_TERMS_HEADER}\n${terms.map((t) => `- ${t}`).join("\n")}`;
+  if (systemPrompt.includes(block.trim())) return systemPrompt;
+  return `${systemPrompt}${block}`;
+};

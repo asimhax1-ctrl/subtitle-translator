@@ -92,3 +92,40 @@ describe("Arabic punctuation normalization", () => {
     expect(outcome.lines).toEqual(["هل أنت بخير؟"]);
   });
 });
+
+describe("Arabic discovered terminology memory", () => {
+  it("includes recurring names in the system prompt for Arabic targets", async () => {
+    let capturedSystemPrompt = "";
+    const translate = async (params: TranslateTextParams): Promise<string> => {
+      capturedSystemPrompt = params.systemPrompt ?? "";
+      return "مرحبا";
+    };
+
+    await translateLines(
+      ["John said hello.", "Mary looked at John.", "John and Mary left."],
+      makeConfig(),
+      { translate },
+      "subtitle",
+    );
+    expect(capturedSystemPrompt).toContain("John");
+    expect(capturedSystemPrompt).toContain("Mary");
+    expect(capturedSystemPrompt).toContain("keep their Arabic transliteration consistent");
+  });
+
+  it("does not include discovered terms for non-Arabic targets", async () => {
+    let capturedSystemPrompt = "";
+    const translate = async (params: TranslateTextParams): Promise<string> => {
+      capturedSystemPrompt = params.systemPrompt ?? "";
+      return "你好";
+    };
+
+    await translateLines(
+      ["John said hello.", "Mary looked at John.", "John and Mary left."],
+      { ...makeConfig(), targetLanguage: "zh" },
+      { translate },
+      "subtitle",
+    );
+    expect(capturedSystemPrompt).not.toContain("John");
+    expect(capturedSystemPrompt).not.toContain("keep their Arabic transliteration consistent");
+  });
+});

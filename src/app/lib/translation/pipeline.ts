@@ -37,7 +37,14 @@ import { getRetryConfig, rateLimitGate, abortableSleep, isDefiniteAuthFailure, i
 // 处只会让错误提示退化（静默）。PREFLIGHT_PROBE_METHODS 同类，已记在 CLAUDE.md。
 import { URL_IS_PRIMARY_CRED } from "./registry";
 import { extractTranslatedLinesWithNumbers, findAdjacentDuplicateSlots, buildContextPrompt, isBlankLine, prefillFromLineCache } from "./contextTranslation";
-import { appendArabicSystemPrompt, detectUntranslatedSource, normalizeArabicPunctuation, isArabicTarget } from "./arabicQuality";
+import {
+  appendArabicSystemPrompt,
+  appendDiscoveredTerms,
+  detectUntranslatedSource,
+  extractLikelyProperNouns,
+  normalizeArabicPunctuation,
+  isArabicTarget,
+} from "./arabicQuality";
 import { isAbortError, formatErrorWithCause } from "@/app/utils/errorUtils";
 
 // Caps context window padding around a batch — without this, a large
@@ -1244,7 +1251,9 @@ const runTranslateLines = async (
 
   // Effective prompts: empty/whitespace input falls back to defaults — same
   // trim-fallback the hook applies before building its runtime config.
-  const systemPrompt = appendArabicSystemPrompt(config.systemPrompt?.trim() ? config.systemPrompt : DEFAULT_SYSTEM_PROMPT, config.targetLanguage);
+  const baseSystemPrompt = appendArabicSystemPrompt(config.systemPrompt?.trim() ? config.systemPrompt : DEFAULT_SYSTEM_PROMPT, config.targetLanguage);
+  const discoveredTerms = isArabicTarget(config.targetLanguage) ? extractLikelyProperNouns(contentLines.join("\n")) : [];
+  const systemPrompt = appendDiscoveredTerms(baseSystemPrompt, config.targetLanguage, discoveredTerms);
   const userPrompt = config.userPrompt?.trim() ? config.userPrompt : DEFAULT_USER_PROMPT;
   // systemPrompt stays the BASE prompt — translateSingle appends the
   // per-request glossary block (filtered to the terms each text contains).
