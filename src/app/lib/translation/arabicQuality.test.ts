@@ -148,6 +148,30 @@ describe("extractLikelyProperNouns", () => {
   it("returns an empty array for text without proper nouns", () => {
     expect(extractLikelyProperNouns("hello world how are you")).toEqual([]);
   });
+
+  it("does not chain common sentence-initial words into fake names", () => {
+    expect(extractLikelyProperNouns("Then John left. Then John returned.")).toEqual(["John"]);
+    expect(extractLikelyProperNouns("Good Morning, sir. Good Morning to you.")).toEqual([]);
+    expect(extractLikelyProperNouns("Wait, stop. Wait a moment.")).toEqual([]);
+    expect(extractLikelyProperNouns("Come On, hurry. Come On.")).toEqual([]);
+  });
+
+  it("extracts all-caps names common in SRT files", () => {
+    expect(extractLikelyProperNouns("JOHN: Come here. JOHN: Listen.")).toEqual(["JOHN"]);
+  });
+
+  it("extracts Katakana names for anime sources", () => {
+    expect(extractLikelyProperNouns("タナカ said hello. タナカ left.")).toEqual(["タナカ"]);
+  });
+
+  it("extracts hyphenated and apostrophe names", () => {
+    expect(extractLikelyProperNouns("Jean-Luc left. Jean-Luc returned.")).toEqual(["Jean-Luc"]);
+    expect(extractLikelyProperNouns("O'Brien left. O'Brien returned.")).toEqual(["O'Brien"]);
+  });
+
+  it("strips Japanese honorifics and extracts the base name", () => {
+    expect(extractLikelyProperNouns("Tanaka-san left. Tanaka-san returned.")).toEqual(["Tanaka"]);
+  });
 });
 
 describe("appendDiscoveredTerms", () => {

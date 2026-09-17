@@ -174,33 +174,81 @@ export const normalizeArabicPunctuation = (text: string): string => {
   return protectedText.replace(/__PROTECT_\d+__/g, (key) => protectedSpans.get(key) ?? key);
 };
 
-// Common words that may be capitalized by chance but are not proper nouns.
+// Common words / dialogue tokens that may be capitalized by chance but are
+// not proper nouns. Used only by the name-discovery heuristic.
 const COMMON_WORDS = new Set([
   "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "from", "as", "is", "was", "are", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must", "shall", "can", "need", "dare", "ought", "used", "this", "that", "these", "those", "i", "you", "he", "she", "it", "we", "they", "my", "your", "his", "her", "its", "our", "their", "what", "which", "who", "when", "where", "why", "how", "all", "each", "every", "both", "few", "more", "most", "other", "some", "such", "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very", "just", "now", "then", "here", "there", "up", "down", "out", "off", "over", "under", "again", "further", "once", "also",
+  // Dialogue openers / common phrases that are not names.
+  "good", "morning", "night", "evening", "afternoon", "hello", "hi", "hey", "oh", "ah", "uh", "hmm", "yeah", "yes", "no", "ok", "okay",
+  "wait", "stop", "come", "came", "comes", "go", "goes", "went", "gone", "back", "on", "off", "calm", "down", "hold", "hurry", "listen", "look", "see", "saw", "seen", "watch", "watched",
+  "maybe", "perhaps", "course", "please", "quiet", "remember", "right", "sorry", "thanks", "thank", "well", "know", "knew", "known",
+  "actually", "because", "since", "like", "man", "boy", "girl", "lady", "guy", "guys", "people", "everyone", "someone", "anyone", "nobody", "nothing", "something", "anything", "everything",
+  "damn", "hell", "god", "sure", "fine", "great", "really", "surely", "probably", "exactly", "definitely", "absolutely",
 ]);
 
 const MIN_TERM_LENGTH = 3;
 const MIN_OCCURRENCES = 2;
 
+// Katakana block — used for foreign names and loanwords in Japanese text.
+const KATAKANA_RE = /[\u30A0-\u30FF]/;
+
+const stripLeadingTrailingPunct = (word: string): string => word.replace(/^[^\p{L}\p{N}'-]+|[^\p{L}\p{N}'-]+$/gu, "");
+
+const isNameLikeLatin = (word: string): boolean => {
+  if (word.length < MIN_TERM_LENGTH) return false;
+  if (COMMON_WORDS.has(word.toLowerCase())) return false;
+  // Capitalized word with optional hyphen/apostrophe suffix (Jean-Luc, O'Brien).
+  // The leading word may be a single letter (O'Brien).
+  if (/^[A-Z][a-z]*(?:[-'][A-Za-z]+)*$/.test(word)) return true;
+  // All-caps names common in SRT files (JOHN, SMITH).
+  if (/^[A-Z]{2,}$/.test(word)) return true;
+  return false;
+};
+
 /**
  * Extract likely proper nouns / recurring names from source text using a
- * lightweight heuristic. Only Latin-script words are considered because the
- * main use case is discovering foreign names that need consistent Arabic
- * transliteration. The heuristic requires the word to appear at least twice
- * and filters out a small list of common words.
+ * lightweight heuristic. Filters out common dialogue words, handles hyphenated
+ * and apostrophe names, all-caps SRT names, and Katakana foreign names for
+ * anime sources. Splits chained title-case phrases so idioms like "Come On"
+ * are not promoted as names.
  */
 export const extractLikelyProperNouns = (text: string): string[] => {
   if (!text) return [];
   const counts = new Map<string, number>();
-  const words = text.match(/[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*/g) ?? [];
-  for (const word of words) {
-    const key = word.trim();
-    if (key.length < MIN_TERM_LENGTH) continue;
-    if (COMMON_WORDS.has(key.toLowerCase())) continue;
-    counts.set(key, (counts.get(key) ?? 0) + 1);
+
+  // Latin-script names: match title-case chains, then split and validate each
+  // word. This prevents "Then John" from becoming a single fake term.
+  // The leading word may be a single letter (O'Brien) and words may carry
+  // Japanese honorifics (Tanaka-san) which are stripped to the base name.
+  const latinMatches: string[] = [
+    ...(text.match(/[A-Z][a-z]*(?:[-'][A-Za-z]+)*(?:\s+[A-Z][a-z]+(?:[-'][A-Za-z]+)*)*/g) ?? []),
+    ...(text.match(/[A-Z]{2,}(?:\s+[A-Z]{2,})*/g) ?? []),
+  ];
+  for (const phrase of latinMatches) {
+    for (const raw of phrase.split(/\s+/)) {
+      const withoutHonorific = raw.replace(/-(?:san|kun|chan|sama)$/i, "");
+      const word = stripLeadingTrailingPunct(withoutHonorific);
+      if (!isNameLikeLatin(word)) continue;
+      counts.set(word, (counts.get(word) ?? 0) + 1);
+    }
   }
+
+  // Katakana names: foreign names in Japanese source are strong signals and
+  // often appear only once per episode, so count them with a lower threshold.
+  const katakanaMatches = text.match(/[\u30A0-\u30FF]+(?:\s+[\u30A0-\u30FF]+)*/g) ?? [];
+  for (const phrase of katakanaMatches) {
+    for (const raw of phrase.split(/\s+/)) {
+      const word = raw.trim();
+      if (word.length < 2) continue;
+      counts.set(word, (counts.get(word) ?? 0) + 1);
+    }
+  }
+
   return [...counts.entries()]
-    .filter(([, count]) => count >= MIN_OCCURRENCES)
+    .filter(([word, count]) => {
+      const threshold = KATAKANA_RE.test(word) ? 1 : MIN_OCCURRENCES;
+      return count >= threshold;
+    })
     .map(([word]) => word)
     .sort();
 };
