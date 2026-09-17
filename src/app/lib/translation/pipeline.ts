@@ -469,7 +469,7 @@ const translateSingle = async (text: string, cacheSuffix: string, config: Pipeli
       extras.glossaryBlock = buildStrictGlossaryPromptBlock(config.strictGlossaryTerms);
     } else {
       const matched = filterTermsMatchingText(ctx.getGlossaryTerms(config.targetLanguage), text);
-      if (matched.length > 0) extras.glossaryBlock = buildGlossaryPromptBlock(matched);
+      if (matched.length > 0) extras.glossaryBlock = buildGlossaryPromptBlock(matched, config.targetLanguage);
     }
   } else if (config.translationMethod === "qwenMt") {
     // Qwen-MT: native terminology intervention instead of a prompt block.

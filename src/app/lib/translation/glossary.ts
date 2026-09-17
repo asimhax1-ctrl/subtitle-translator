@@ -56,12 +56,20 @@ const isReplaceSafe = (term: GlossaryTerm): boolean => {
  * the user message. Empty string when there are no complete terms. Includes
  * `target ⊇ source` terms — the prompt SHOULD still steer the model on them;
  * only leak-through skips them (see isReplaceSafe).
+ *
+ * `targetLang` is used to choose language-specific reinforcement. For Arabic
+ * the wording is stronger because glossary adherence directly affects name
+ * and terminology consistency across long-form subtitles.
  */
-export const buildGlossaryPromptBlock = (terms: GlossaryTerm[]): string => {
+export const buildGlossaryPromptBlock = (terms: GlossaryTerm[], targetLang?: string): string => {
   const valid = terms.filter(isComplete);
   if (valid.length === 0) return "";
   const lines = valid.map((term) => `${term.source.trim()} → ${term.target.trim()}`).join("\n");
-  return `Glossary — always translate these terms exactly as specified (source → target). Keep them consistent everywhere they appear:\n${lines}`;
+  const isArabic = targetLang === "ar";
+  const header = isArabic
+    ? "MANDATORY GLOSSARY — these terms MUST appear in the Arabic translation EXACTLY as specified (source → target). Do not translate, paraphrase, or alter them. Keep them consistent everywhere they appear:"
+    : "Glossary — always translate these terms exactly as specified (source → target). Keep them consistent everywhere they appear:";
+  return `${header}\n${lines}`;
 };
 
 // Per-term compiled form: the alternation `pattern` for the combined regex, and a
