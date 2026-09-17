@@ -59,3 +59,36 @@ describe("Arabic prompt injection", () => {
     expect(capturedSystemPrompt).toContain("Modern Standard Arabic");
   });
 });
+
+describe("Arabic untranslated-source repair", () => {
+  it("retries a line that still contains the source text", async () => {
+    let calls = 0;
+    const translate = async (params: TranslateTextParams): Promise<string> => {
+      calls++;
+      const isRepair = (params.systemPrompt ?? "").includes("CRITICAL: The previous output");
+      if (isRepair) return "مرحبا";
+      return "Hello";
+    };
+
+    const outcome = await translateLines(["Hello"], makeConfig(), { translate }, "subtitle");
+    expect(calls).toBe(2);
+    expect(outcome.lines).toEqual(["مرحبا"]);
+    expect(outcome.failures).toEqual([]);
+  });
+
+  it("keeps the original bad translation if the retry still leaks source text", async () => {
+    const translate = async (): Promise<string> => "Hello";
+
+    const outcome = await translateLines(["Hello"], makeConfig(), { translate }, "subtitle");
+    expect(outcome.lines).toEqual(["Hello"]);
+  });
+});
+
+describe("Arabic punctuation normalization", () => {
+  it("normalizes Latin punctuation in Arabic output", async () => {
+    const translate = async (): Promise<string> => "هل أنت بخير?";
+
+    const outcome = await translateLines(["Are you okay?"], makeConfig(), { translate }, "subtitle");
+    expect(outcome.lines).toEqual(["هل أنت بخير؟"]);
+  });
+});

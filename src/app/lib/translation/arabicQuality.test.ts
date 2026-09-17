@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendArabicSystemPrompt, isArabicTarget } from "@/app/lib/translation/arabicQuality";
+import { appendArabicSystemPrompt, detectUntranslatedSource, isArabicTarget, normalizeArabicPunctuation } from "@/app/lib/translation/arabicQuality";
 import { DEFAULT_SYSTEM_PROMPT } from "@/app/lib/translation/config";
 
 describe("isArabicTarget", () => {
@@ -31,5 +31,53 @@ describe("appendArabicSystemPrompt", () => {
     const first = appendArabicSystemPrompt(DEFAULT_SYSTEM_PROMPT, "ar");
     const second = appendArabicSystemPrompt(first, "ar");
     expect(second).toBe(first);
+  });
+});
+
+describe("detectUntranslatedSource", () => {
+  it("flags a line that was returned unchanged", () => {
+    expect(detectUntranslatedSource("Hello world", "Hello world")).toBe(true);
+  });
+
+  it("flags a translation that still contains a long source word", () => {
+    expect(detectUntranslatedSource("Where are you going?", "أين أنت going?")).toBe(true);
+  });
+
+  it("does not flag a fully translated Arabic line", () => {
+    expect(detectUntranslatedSource("Hello world", "مرحبا بالعالم")).toBe(false);
+  });
+
+  it("ignores short common tokens such as OK or TV", () => {
+    expect(detectUntranslatedSource("OK, see you", "حسنا، أراك later")).toBe(false);
+  });
+
+  it("ignores all-caps acronyms", () => {
+    expect(detectUntranslatedSource("Report to NASA", "تقرير إلى NASA")).toBe(false);
+  });
+
+  it("ignores source lines that have no translatable Latin text", () => {
+    expect(detectUntranslatedSource("123", "123")).toBe(false);
+  });
+});
+
+describe("normalizeArabicPunctuation", () => {
+  it("converts Latin question marks to Arabic question marks", () => {
+    expect(normalizeArabicPunctuation("هل أنت بخير?")).toBe("هل أنت بخير؟");
+  });
+
+  it("converts Latin commas to Arabic commas", () => {
+    expect(normalizeArabicPunctuation("أهلا, كيف حالك?")).toBe("أهلا، كيف حالك؟");
+  });
+
+  it("converts Latin semicolons to Arabic semicolons", () => {
+    expect(normalizeArabicPunctuation("تعال؛ هنا")).toBe("تعال؛ هنا");
+  });
+
+  it("leaves already Arabic punctuation unchanged", () => {
+    expect(normalizeArabicPunctuation("هل أنت بخير؟")).toBe("هل أنت بخير؟");
+  });
+
+  it("leaves non-Arabic text unchanged", () => {
+    expect(normalizeArabicPunctuation("Hello, world!")).toBe("Hello, world!");
   });
 });

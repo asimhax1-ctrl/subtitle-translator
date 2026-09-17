@@ -37,7 +37,7 @@ import { getRetryConfig, rateLimitGate, abortableSleep, isDefiniteAuthFailure, i
 // 处只会让错误提示退化（静默）。PREFLIGHT_PROBE_METHODS 同类，已记在 CLAUDE.md。
 import { URL_IS_PRIMARY_CRED } from "./registry";
 import { extractTranslatedLinesWithNumbers, findAdjacentDuplicateSlots, buildContextPrompt, isBlankLine, prefillFromLineCache } from "./contextTranslation";
-import { appendArabicSystemPrompt } from "./arabicQuality";
+import { appendArabicSystemPrompt, detectUntranslatedSource, normalizeArabicPunctuation, isArabicTarget } from "./arabicQuality";
 import { isAbortError, formatErrorWithCause } from "@/app/utils/errorUtils";
 
 // Caps context window padding around a batch — without this, a large
@@ -377,7 +377,10 @@ export const translateCore = async (params: TranslateTextParams, cache?: Pipelin
 
 // ─── Single-line engine ─────────────────────────────────────────────────────
 
-const applyGlossary = (ctx: RunCtx, text: string, targetLang: string): string => applyGlossaryToText(text, ctx.getGlossaryTerms(targetLang));
+const applyGlossary = (ctx: RunCtx, text: string, targetLang: string): string => {
+  const glossed = applyGlossaryToText(text, ctx.getGlossaryTerms(targetLang));
+  return isArabicTarget(targetLang) ? normalizeArabicPunctuation(glossed) : glossed;
+};
 
 // Retry translation with config - throws on failure (no fallback to original text)
 //
@@ -614,6 +617,39 @@ const enforceGlossaryOnLine = async (sourceLine: string, rawTranslated: string, 
   }
 };
 
+// 漏翻校验 + 一次定向重试(仅 LLM → Arabic)。当译文里仍然残留源文(Latin
+// 词被原样带回)时,追加一条严格指令单行重译;重试结果仍残留则退回首译,
+// 不让一次失败的营救把已经对的行变成空或原文。
+const repairUntranslatedSource = async (
+  sourceLine: string,
+  translated: string,
+  cacheSuffix: string,
+  config: PipelineRuntimeConfig,
+  ctx: RunCtx,
+  fullText?: string,
+): Promise<string> => {
+  if (!isArabicTarget(config.targetLanguage) || !LLM_MODELS.includes(config.translationMethod)) return translated;
+  if (!detectUntranslatedSource(sourceLine, translated)) return translated;
+
+  const strictInstruction =
+    "\n\nCRITICAL: The previous output still contained untranslated source text. Translate the ENTIRE line into Arabic. Only proper names and user glossary terms may remain in their original form; everything else must be in Arabic.";
+  try {
+    const retrySuffix = `${cacheSuffix}_ut${SparkMD5.hash(sourceLine)}`;
+    const retried = await translateSingle(
+      sourceLine,
+      retrySuffix,
+      { ...config, systemPrompt: `${config.systemPrompt ?? DEFAULT_SYSTEM_PROMPT}${strictInstruction}` },
+      ctx,
+      fullText,
+    );
+    const second = applyGlossary(ctx, retried ?? "", config.targetLanguage);
+    return detectUntranslatedSource(sourceLine, second) ? translated : second;
+  } catch (error) {
+    if (isDefiniteAuthFailure(error)) throw error;
+    return translated;
+  }
+};
+
 // translateSingle + leak-through + 错译重试的单行复合入口 —— 各批量路径共用,
 // 避免各调用点漏掉 enforcement。
 // 【没有】对应的公开单行 API:曾经有过(hook 以 translateSingleWithGlossary
@@ -626,7 +662,9 @@ const enforceGlossaryOnLine = async (sourceLine: string, rawTranslated: string, 
 // 被覆盖 —— 一个静默到极点的失效。必填让漏传变成编译错误。
 const translateSingleWithGlossary = async (text: string, cacheSuffix: string, config: PipelineRuntimeConfig, ctx: RunCtx, index: number, fullText?: string): Promise<string> => {
   const raw = await translateSingle(text, cacheSuffix, config, ctx, fullText);
-  const final = await enforceGlossaryOnLine(text, raw ?? "", cacheSuffix, config, ctx, fullText);
+  const enforced = await enforceGlossaryOnLine(text, raw ?? "", cacheSuffix, config, ctx, fullText);
+  const repaired = await repairUntranslatedSource(text, enforced, cacheSuffix, config, ctx, fullText);
+  const final = isArabicTarget(config.targetLanguage) ? normalizeArabicPunctuation(repaired) : repaired;
   // 实时流:术语表处理完毕后的【最终】译文在此可见。失败行不在此发射 ——
   // 它们走 failure 面板的统一呈现(catch 在调用方,到不了这里)。
   ctx.emitLine?.({ index, original: text, translation: final });
@@ -862,9 +900,10 @@ const translateWithContext = async (
           // soft-fail"), so a fully-failed line stays the untouched original
           // instead of a half-localized mix like "斯派克, hi".
           const enforced = await enforceGlossaryOnLine(pendingSources[j], translatedBatch[j], cacheSuffix, runtimeConfig, ctx, fullText);
-          translatedLines[slot] = enforced;
+          const repaired = await repairUntranslatedSource(pendingSources[j], enforced, cacheSuffix, runtimeConfig, ctx, fullText);
+          translatedLines[slot] = isArabicTarget(runtimeConfig.targetLanguage) ? normalizeArabicPunctuation(repaired) : repaired;
           // 实时流:这一槽立刻可见,不等整批 20-60s 的请求全部回来。
-          ctx.emitLine?.({ index: slot, original: pendingSources[j], translation: enforced });
+          ctx.emitLine?.({ index: slot, original: pendingSources[j], translation: translatedLines[slot] });
           if (cache) await cache.set(contextCacheKeys[slot], translatedLines[slot]);
         }
       }
