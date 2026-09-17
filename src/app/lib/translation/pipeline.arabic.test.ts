@@ -128,4 +128,28 @@ describe("Arabic discovered terminology memory", () => {
     expect(capturedSystemPrompt).not.toContain("John");
     expect(capturedSystemPrompt).not.toContain("keep their Arabic transliteration consistent");
   });
+
+  it("learns and enforces the Arabic form of a discovered name across batches", async () => {
+    const seenGlossaryBlocks: string[] = [];
+    let callIndex = 0;
+    const translate = async (params: TranslateTextParams): Promise<string> => {
+      callIndex++;
+      seenGlossaryBlocks.push(params.glossaryBlock ?? "");
+      if (callIndex === 1) {
+        // First batch translates the isolated name and chooses "جون".
+        return "[TRANSLATE_0]جون.[/TRANSLATE_0]";
+      }
+      // Second batch should receive the learned form as a glossary pair.
+      return "[TRANSLATE_0]جون رحل.[/TRANSLATE_0]";
+    };
+
+    const outcome = await translateLines(
+      ["John.", "John left."],
+      { ...makeConfig(), contextWindow: 1, contextBatchSize: 1 },
+      { translate },
+      "subtitle",
+    );
+    expect(outcome.lines).toEqual(["جون.", "جون رحل."]);
+    expect(seenGlossaryBlocks.some((b) => b.includes("John → جون"))).toBe(true);
+  });
 });

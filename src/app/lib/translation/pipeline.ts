@@ -307,7 +307,16 @@ type RunCtx = {
   shouldStop: () => boolean;
   onProgress?: (current: number, total: number) => void;
   onRateLimit?: () => void;
+  /** User glossary + learned discovered-term forms merged into one list. */
   getGlossaryTerms: (targetLang: string) => GlossaryTerm[];
+  /** Source-language names/terms discovered at run start for Arabic targets. */
+  discoveredTerms: string[];
+  /** Map of discovered source term → Arabic form observed first in this run. */
+  learnedForms: Map<string, string>;
+  /** Stable hash of learnedForms for cache-key divergence. */
+  getLearnedFormsHash: () => string;
+  /** Record Arabic forms from a source → translation pair when confident. */
+  learnTermForms: (source: string, translation: string) => void;
   /** Live per-line stream (batch-level, from TranslateBatchMeta.onLineTranslated). */
   emitLine?: (result: LineTranslatedEvent) => void;
   noteError: (error: unknown) => void;
@@ -477,9 +486,15 @@ const translateSingle = async (text: string, cacheSuffix: string, config: Pipeli
     if (matched.length > 0) extras.glossaryTerms = matched.map((t) => ({ source: t.source.trim(), target: t.target.trim() }));
   }
 
+  // Diverge the cache key when learned forms are present so a later batch
+  // with a new learned form does not replay an earlier translation generated
+  // without that form.
+  const learnedHash = ctx.getLearnedFormsHash();
+  const effectiveCacheSuffix = learnedHash ? `${cacheSuffix}_lf${learnedHash}` : cacheSuffix;
+
   const translateParams: TranslateTextParams = {
     text,
-    cacheSuffix,
+    cacheSuffix: effectiveCacheSuffix,
     translationMethod: config.translationMethod,
     targetLanguage: config.targetLanguage,
     sourceLanguage: config.sourceLanguage,
@@ -682,6 +697,9 @@ const translateSingleWithGlossary = async (text: string, cacheSuffix: string, co
   const enforced = await enforceGlossaryOnLine(text, raw ?? "", cacheSuffix, config, ctx, fullText);
   const repaired = await repairUntranslatedSource(text, enforced, cacheSuffix, config, ctx, fullText);
   const final = isArabicTarget(config.targetLanguage) ? normalizeArabicPunctuation(repaired) : repaired;
+  // Record Arabic forms of discovered names observed in this line so later
+  // batches can enforce the same transliteration.
+  ctx.learnTermForms(text, final);
   // 实时流:术语表处理完毕后的【最终】译文在此可见。失败行不在此发射 ——
   // 它们走 failure 面板的统一呈现(catch 在调用方,到不了这里)。
   ctx.emitLine?.({ index, original: text, translation: final });
@@ -919,6 +937,9 @@ const translateWithContext = async (
           const enforced = await enforceGlossaryOnLine(pendingSources[j], translatedBatch[j], cacheSuffix, runtimeConfig, ctx, fullText);
           const repaired = await repairUntranslatedSource(pendingSources[j], enforced, cacheSuffix, runtimeConfig, ctx, fullText);
           translatedLines[slot] = isArabicTarget(runtimeConfig.targetLanguage) ? normalizeArabicPunctuation(repaired) : repaired;
+          // Record Arabic forms of discovered names observed in this line so
+          // later batches can enforce the same transliteration.
+          ctx.learnTermForms(pendingSources[j], translatedLines[slot]);
           // 实时流:这一槽立刻可见,不等整批 20-60s 的请求全部回来。
           ctx.emitLine?.({ index: slot, original: pendingSources[j], translation: translatedLines[slot] });
           if (cache) await cache.set(contextCacheKeys[slot], translatedLines[slot]);
@@ -1234,6 +1255,58 @@ const runTranslateLines = async (
   const runController = new AbortController();
   const unchain = chainSignal(runController, deps.signal);
 
+  // Effective prompts: empty/whitespace input falls back to defaults — same
+  // trim-fallback the hook applies before building its runtime config.
+  const baseSystemPrompt = appendArabicSystemPrompt(config.systemPrompt?.trim() ? config.systemPrompt : DEFAULT_SYSTEM_PROMPT, config.targetLanguage);
+  const discoveredTerms = isArabicTarget(config.targetLanguage) ? extractLikelyProperNouns(contentLines.join("\n")) : [];
+  const systemPrompt = appendDiscoveredTerms(baseSystemPrompt, config.targetLanguage, discoveredTerms);
+  const userPrompt = config.userPrompt?.trim() ? config.userPrompt : DEFAULT_USER_PROMPT;
+
+  // Run-scoped terminology memory for Arabic: record the first Arabic form
+  // observed for each discovered name, then enforce it as a glossary term in
+  // subsequent batches. This is the only mechanism that turns advisory
+  // "keep consistent" prompts into actual cross-batch consistency.
+  const userGlossaryTerms = deps.getGlossaryTerms ?? (() => [] as GlossaryTerm[]);
+  const learnedForms = new Map<string, string>();
+  let cachedEffectiveTerms: GlossaryTerm[] | undefined;
+  let cachedEffectiveTermsHash = "";
+
+  const getLearnedFormsHash = (): string =>
+    learnedForms.size > 0
+      ? SparkMD5.hash(JSON.stringify([...learnedForms.entries()].map(([k, v]) => [k.trim(), v.trim()]).sort()))
+      : "";
+
+  const getEffectiveGlossaryTerms = (targetLang: string): GlossaryTerm[] => {
+    const learnedHash = getLearnedFormsHash();
+    if (cachedEffectiveTermsHash === learnedHash && cachedEffectiveTerms) return cachedEffectiveTerms;
+    const user = userGlossaryTerms(targetLang);
+    const learned = [...learnedForms.entries()]
+      .filter(([, target]) => target.trim())
+      .map(([source, target]) => ({ source: source.trim(), target: target.trim(), targetLang }));
+    cachedEffectiveTerms = [...user, ...learned];
+    cachedEffectiveTermsHash = learnedHash;
+    return cachedEffectiveTerms;
+  };
+
+  const learnTermForms = (source: string, translation: string): void => {
+    if (!isArabicTarget(config.targetLanguage)) return;
+    for (const term of discoveredTerms) {
+      if (learnedForms.has(term)) continue;
+      const termLower = term.toLowerCase();
+      if (!source.toLowerCase().includes(termLower)) continue;
+      // If the Latin source term survived verbatim, no Arabic form was chosen yet.
+      const termRe = new RegExp(`(?<![a-zA-Z])${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![a-zA-Z])`, "i");
+      if (termRe.test(translation)) continue;
+      // Conservative: only learn when the translation offers a single Arabic
+      // word, so we don't misattribute a whole sentence to one name.
+      const arabicWords = translation.match(/[\u0600-\u06FF]{2,}/g) ?? [];
+      if (arabicWords.length === 1) {
+        learnedForms.set(term, arabicWords[0]);
+        cachedEffectiveTerms = undefined; // invalidate merged cache
+      }
+    }
+  };
+
   const ctx: RunCtx = {
     cache: deps.cache,
     translate: resolveTranslate(deps),
@@ -1249,7 +1322,11 @@ const runTranslateLines = async (
     //      一层有。缺了它面板就只能打序数,和失败面板的行号对不上(见
     //      LineTranslatedEvent 的注释)。
     emitLine: meta?.onLineTranslated ? (event) => void (isBlankLine(event.original) || meta.onLineTranslated!({ ...event, line: event.line ?? failureLine(config, meta, event.index) })) : undefined,
-    getGlossaryTerms: deps.getGlossaryTerms ?? (() => []),
+    getGlossaryTerms: getEffectiveGlossaryTerms,
+    discoveredTerms,
+    learnedForms,
+    getLearnedFormsHash,
+    learnTermForms,
     noteError: (error) => {
       state.lastError = error;
     },
@@ -1258,13 +1335,6 @@ const runTranslateLines = async (
     },
     wasRateLimited: () => state.rateLimited,
   };
-
-  // Effective prompts: empty/whitespace input falls back to defaults — same
-  // trim-fallback the hook applies before building its runtime config.
-  const baseSystemPrompt = appendArabicSystemPrompt(config.systemPrompt?.trim() ? config.systemPrompt : DEFAULT_SYSTEM_PROMPT, config.targetLanguage);
-  const discoveredTerms = isArabicTarget(config.targetLanguage) ? extractLikelyProperNouns(contentLines.join("\n")) : [];
-  const systemPrompt = appendDiscoveredTerms(baseSystemPrompt, config.targetLanguage, discoveredTerms);
-  const userPrompt = config.userPrompt?.trim() ? config.userPrompt : DEFAULT_USER_PROMPT;
   // systemPrompt stays the BASE prompt — translateSingle appends the
   // per-request glossary block (filtered to the terms each text contains).
   const runtimeConfig: PipelineRuntimeConfig = { ...config, systemPrompt, userPrompt };
